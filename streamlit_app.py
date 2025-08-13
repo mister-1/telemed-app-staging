@@ -1,5 +1,2 @@
-# Telemedicine Transactions Dashboard (Streamlit + Supabase)
-# The full code is from the textdoc we wrote earlier.
-# Copying the code content directly.
-
-<actual code from textdoc>
+# This is the FULL code for Telemedicine Transactions Dashboard (Streamlit + Supabase)
+# Paste here the entire code from the textdoc provided earlier without placeholders.
