@@ -51,22 +51,28 @@ st.set_page_config(
 st.markdown(
     f"""
     <style>
-      .stApp {{ background-color: {PASTEL_BG}; }}
+      @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@400;600&display=swap');
+      :root {{
+        --pastel-bg: {PASTEL_BG};
+        --pastel-card: {PASTEL_CARD};
+        --pastel-text: {PASTEL_TEXT};
+      }}
+      html, body, [class*="st-"] {{ font-family: 'Kanit', system-ui, -apple-system, Segoe UI, sans-serif; }}
+      .stApp {{ background-color: var(--pastel-bg); }}
       .stButton>button {{
           background: linear-gradient(135deg, {PASTEL_ACCENT}, {PASTEL_ACCENT_3});
-          color: {PASTEL_TEXT};
-          border: none; border-radius: 14px; padding: 0.6rem 1rem; font-weight: 600;
+          color: var(--pastel-text); border: none; border-radius: 14px; padding: 0.6rem 1rem; font-weight: 600;
           box-shadow: 0 4px 12px rgba(0,0,0,0.05);
       }}
-      .stTextInput>div>div>input, .stNumberInput>div>div>input, .stSelectbox>div>div>div {{
-          background: {PASTEL_CARD}; color: {PASTEL_TEXT}; border-radius: 12px;
+      .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] > div {{
+          background: var(--pastel-card); color: var(--pastel-text); border-radius: 12px;
       }}
-      .css-1d391kg, .e1f1d6gn2 {{ color: {PASTEL_TEXT}; }}
-      .metric-card {{ background: {PASTEL_CARD}; padding: 1rem; border-radius: 16px; box-shadow: 0 1px 8px rgba(0,0,0,0.05); }}
+      .metric-card {{ background: var(--pastel-card); padding: 1rem; border-radius: 16px; box-shadow: 0 1px 8px rgba(0,0,0,0.05); }}
     </style>
     """,
     unsafe_allow_html=True,
 )
+
 
 # =========================
 # ---- ENV & CONNECTION ----
