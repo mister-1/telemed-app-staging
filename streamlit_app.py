@@ -1,17 +1,19 @@
-
-# Telemedicine Transactions Dashboard (Streamlit + Supabase)
-# Features: pastel UI, Thai font, KPIs, filters with quick presets, grouped charts with labels,
-# admin pages (hospitals, transactions with CSV import, admins), rider validation, export CSV.
+# Telemedicine Transactions Dashboard — Upgraded (Streamlit + Supabase)
+# Features: pastel UI + dark mode, KPIs, filters with quick presets,
+# grouped charts with labels, drill-down per hospital, alerts with targets,
+# optional LINE Notify, export CSV, CSV bulk import, seed/reset demo data,
+# viewer/admin separation, admin pages (hospitals, transactions, admins, settings), rider validation.
 
 import os
 import uuid
 import json
 import bcrypt
+import requests
 import pandas as pd
 import plotly.express as px
 from io import StringIO
 from datetime import date, timedelta
-from typing import Dict
+from typing import Dict, Any
 
 import streamlit as st
 from supabase import create_client, Client
@@ -26,40 +28,11 @@ PASTEL_ACCENT_2 = '#F8C8DC'  # soft pink
 PASTEL_ACCENT_3 = '#B6E2D3'  # mint
 PASTEL_TEXT = '#3E4B6D'
 
+DARK_BG = '#0F172A'
+DARK_CARD = '#111827'
+DARK_TEXT = '#E5E7EB'
+
 st.set_page_config(page_title='Telemedicine Transactions', page_icon='📊', layout='wide')
-
-st.markdown(f"""
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@400;600&display=swap');
-  :root {{
-    --pastel-bg: {PASTEL_BG};
-    --pastel-card: {PASTEL_CARD};
-    --pastel-text: {PASTEL_TEXT};
-  }}
-  html, body, [class*='st-'] {{ font-family: 'Kanit', system-ui, -apple-system, Segoe UI, sans-serif; }}
-  .stApp {{ background-color: var(--pastel-bg); }}
-  .stButton>button {{
-      background: linear-gradient(135deg, {PASTEL_ACCENT}, {PASTEL_ACCENT_3});
-      color: var(--pastel-text); border: none; border-radius: 14px; padding: 0.6rem 1rem; font-weight: 600;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-  }}
-  .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb='select'] > div {{
-      background: var(--pastel-card); color: var(--pastel-text); border-radius: 12px;
-  }}
-  .metric-card {{ background: var(--pastel-card); padding: 1rem; border-radius: 16px; box-shadow: 0 1px 8px rgba(0,0,0,0.05); }}
-</style>
-""", unsafe_allow_html=True)
-
-# Plotly defaults
-px.defaults.template = 'plotly_white'
-px.defaults.color_discrete_sequence = ['#A7C7E7','#F8C8DC','#B6E2D3','#FDE2B3','#EAD7F7','#CDE5F0','#FFD6E8']
-
-def prettify_bar(fig, y_title=''):
-    fig.update_traces(texttemplate='%{text:,}', textposition='outside', cliponaxis=False,
-                      hovertemplate='<b>%{x}</b><br>ค่า: %{y:,}<extra></extra>')
-    fig.update_layout(uniformtext_minsize=12, uniformtext_mode='hide',
-                      yaxis_title=y_title, margin=dict(t=30,r=20,b=40,l=50), barmode='group')
-    return fig
 
 # =========================
 # ---- ENV & CONNECTION ----
@@ -84,7 +57,7 @@ SITE_CONTROL_CHOICES = ['ทีมใต้', 'ทีมเหนือ', 'ท�
 SYSTEM_CHOICES = ['HOSxpV4', 'HOSxpV3', 'WebPortal']
 SERVICE_MODEL_CHOICES = ['Rider', 'App', 'Station to Station']
 
-# Province → Region mapping (TH) as Python dict (avoid triple quotes)
+# Province → Region mapping (TH)
 TH_PROVINCES: Dict[str, str] = {
   'กระบี่':'ภาคใต้','กรุงเทพมหานคร':'ภาคกลาง','กาญจนบุรี':'ภาคตะวันตก','กาฬสินธุ์':'ภาคอีสาน',
   'กำแพงเพชร':'ภาคเหนือ','ขอนแก่น':'ภาคอีสาน','จันทบุรี':'ภาคตะวันออก','ฉะเชิงเทรา':'ภาคตะวันออก',
@@ -110,6 +83,26 @@ TH_PROVINCES: Dict[str, str] = {
 REGION_CHOICES = sorted(list(set(TH_PROVINCES.values())))
 
 # =========================
+# --------- SETTINGS -------
+# =========================
+def get_setting(key: str, default: Any=None) -> Any:
+    try:
+        res = sb.table('settings').select('*').eq('key', key).execute().data
+        if res:
+            return res[0]['value']
+    except Exception:
+        pass
+    return default
+
+def set_setting(key: str, value: Any):
+    sb.table('settings').upsert({'key': key, 'value': value}).execute()
+
+# Defaults
+DEFAULT_TARGETS = {'daily_transactions': 50, 'utilization_alert_pct': 90}
+targets = get_setting('targets', DEFAULT_TARGETS) or DEFAULT_TARGETS
+line_cfg = get_setting('line_notify', {'enabled': False, 'token': ''}) or {'enabled': False, 'token': ''}
+
+# =========================
 # -------- HELPERS ---------
 # =========================
 def hash_pw(pw: str) -> str:
@@ -127,11 +120,14 @@ def load_df(table: str) -> pd.DataFrame:
     return pd.DataFrame(data)
 
 def force_rerun():
+    # Safer rerun helper (fixes sidebar toggle recursion issues)
     try:
         st.rerun()
     except Exception:
-        if hasattr(st, 'experimental_rerun'):
-            st.experimental_rerun()
+        try:
+            st.experimental_rerun()  # for older Streamlit
+        except Exception:
+            pass
 
 def reload_all():
     load_df.clear()
@@ -146,7 +142,68 @@ def ensure_default_admin():
             'password_hash': hash_pw('Telemed@DHI')
         }).execute()
 
+def send_line_notify(message: str):
+    if not isinstance(line_cfg, dict): return
+    if line_cfg.get('enabled') and line_cfg.get('token'):
+        try:
+            requests.post(
+                'https://notify-api.line.me/api/notify',
+                headers={'Authorization': f"Bearer {line_cfg['token']}"},
+                data={'message': message},
+                timeout=5
+            )
+        except Exception:
+            pass
+
 ensure_default_admin()
+
+# =========================
+# ---------- THEME CSS -----
+# =========================
+if 'ui' not in st.session_state:
+    st.session_state['ui'] = {'dark': False}
+
+with st.sidebar:
+    st.markdown('### 🎨 Appearance')
+    st.session_state.ui['dark'] = st.checkbox('โหมดมืด (Dark mode)', value=st.session_state.ui['dark'], key='dark_mode_toggle')
+
+if st.session_state.ui['dark']:
+    BG, CARD, TEXT = DARK_BG, DARK_CARD, DARK_TEXT
+else:
+    BG, CARD, TEXT = PASTEL_BG, PASTEL_CARD, PASTEL_TEXT
+
+st.markdown(f'''
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@400;600&display=swap');
+  :root {{
+    --bg: {BG};
+    --card: {CARD};
+    --text: {TEXT};
+  }}
+  html, body, [class*='st-'] {{ font-family: 'Kanit', system-ui, -apple-system, Segoe UI, sans-serif; }}
+  .stApp {{ background-color: var(--bg); }}
+  .stButton>button {{
+      background: linear-gradient(135deg, {PASTEL_ACCENT}, {PASTEL_ACCENT_3});
+      color: var(--text); border: none; border-radius: 14px; padding: 0.6rem 1rem; font-weight: 600;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+  }}
+  .metric-card {{ background: var(--card); color: var(--text); padding: 1rem; border-radius: 16px; box-shadow: 0 1px 8px rgba(0,0,0,0.05); }}
+  .stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb='select'] > div {{
+      background: var(--card); color: var(--text); border-radius: 12px;
+  }}
+</style>
+''', unsafe_allow_html=True)
+
+# Plotly defaults
+px.defaults.template = 'plotly_white'
+px.defaults.color_discrete_sequence = ['#A7C7E7','#F8C8DC','#B6E2D3','#FDE2B3','#EAD7F7','#CDE5F0','#FFD6E8']
+
+def prettify_bar(fig, y_title=''):
+    fig.update_traces(texttemplate='%{text:,}', textposition='outside', cliponaxis=False,
+                      hovertemplate='<b>%{x}</b><br>ค่า: %{y:,}<extra></extra>')
+    fig.update_layout(uniformtext_minsize=12, uniformtext_mode='hide',
+                      yaxis_title=y_title, margin=dict(t=30,r=20,b=40,l=50), barmode='group')
+    return fig
 
 # =========================
 # ---------- AUTH ----------
@@ -158,8 +215,8 @@ with st.sidebar:
     st.markdown('## 🔐 Admin Login')
     if not st.session_state.auth['ok']:
         with st.form('login_form', clear_on_submit=False):
-            u = st.text_input('Username', value='')
-            p = st.text_input('Password', type='password', value='')
+            u = st.text_input('Username', value='', key='login_u')
+            p = st.text_input('Password', type='password', value='', key='login_p')
             submitted = st.form_submit_button('Login')
         if submitted:
             rows = sb.table('admins').select('*').eq('username', u).execute().data
@@ -171,7 +228,7 @@ with st.sidebar:
                 st.error('ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง')
     else:
         st.write(f"✅ Logged in as **{st.session_state.auth['user']}**")
-        if st.button('Logout'):
+        if st.button('Logout', key='logout_btn'):
             st.session_state.auth = {'ok': False, 'user': None}
             force_rerun()
 
@@ -182,28 +239,28 @@ hospitals_df = load_df('hospitals')
 colF1, colF2, colF3 = st.columns([1,1,2])
 with colF1:
     hospital_names = ['(ทั้งหมด)'] + sorted(hospitals_df.get('name', pd.Series(dtype=str)).dropna().unique().tolist())
-    selected_hospital = st.selectbox('โรงพยาบาล', hospital_names)
+    selected_hospital = st.selectbox('โรงพยาบาล', hospital_names, key='filter_h')
 with colF2:
     today = date.today()
     start_default = today - timedelta(days=30)
-    date_range = st.date_input('ช่วงวันที่', value=(start_default, today))
+    date_range = st.date_input('ช่วงวันที่', value=(start_default, today), key='filter_d')
     if isinstance(date_range, tuple):
         start_date, end_date = date_range
     else:
         start_date, end_date = (start_default, today)
 with colF3:
-    site_filter = st.multiselect('ทีมภูมิภาค (SiteControl)', SITE_CONTROL_CHOICES)
+    site_filter = st.multiselect('ทีมภูมิภาค (SiteControl)', SITE_CONTROL_CHOICES, key='filter_s')
 
 # Quick-date presets
 with st.container():
     cA, cB, cC, cD = st.columns(4)
-    if cA.button('7 วันล่าสุด'):
+    if cA.button('7 วันล่าสุด', key='q7'):
         start_date, end_date = (date.today()-timedelta(days=6), date.today())
-    if cB.button('30 วันล่าสุด'):
+    if cB.button('30 วันล่าสุด', key='q30'):
         start_date, end_date = (date.today()-timedelta(days=29), date.today())
-    if cC.button('เดือนนี้'):
+    if cC.button('เดือนนี้', key='qmon'):
         start_date, end_date = (date.today().replace(day=1), date.today())
-    if cD.button('ทั้งหมด'):
+    if cD.button('ทั้งหมด', key='qall'):
         tx_all = load_df('transactions')
         if not tx_all.empty:
             tx_all['date'] = pd.to_datetime(tx_all['date']).dt.date
@@ -248,6 +305,15 @@ with colK3:
     st.markdown(f"<div class='metric-card'><b>Rider Active (รวม)</b><h2>{sum_riders_active:,}</h2></div>", unsafe_allow_html=True)
 with colK4:
     st.markdown(f"<div class='metric-card'><b>จำนวน Rider (Capacity)</b><h2>{sum_riders_capacity:,}</h2></div>", unsafe_allow_html=True)
+
+# KPI Alerts
+if targets:
+    daily_total = merged.groupby('date')['transactions_count'].sum().reset_index()
+    if not daily_total.empty:
+        latest_row = daily_total.sort_values('date').iloc[-1]
+        if latest_row['transactions_count'] < targets.get('daily_transactions', 0):
+            st.warning(f"⚠️ ยอดวันนี้ ({int(latest_row['transactions_count']):,}) ต่ำกว่าเป้า {targets.get('daily_transactions'):,}")
+            send_line_notify(f"[Telemed Dashboard] ยอดวันนี้ {int(latest_row['transactions_count']):,} ต่ำกว่าเป้า {targets.get('daily_transactions'):,}")
 
 # =========================
 # --------- CHARTS ---------
@@ -311,43 +377,94 @@ else:
     dl_button(monthly,  'ดาวน์โหลดภาพรวมรายเดือน',            'by_month.csv')
 
 # =========================
+# ------ DRILL-DOWN --------
+# =========================
+st.markdown('---')
+st.markdown('### 🔎 Drill-down รายโรงพยาบาล')
+dd_col1, dd_col2 = st.columns([2,1])
+with dd_col1:
+    dd_hosp = st.selectbox('เลือกโรงพยาบาล', ['(เลือก)'] + sorted(hospitals_df.get('name', pd.Series(dtype=str)).dropna().unique().tolist()), key='dd_h')
+with dd_col2:
+    show_util = st.checkbox('แสดง Utilization %', value=True, key='dd_util')
+
+if dd_hosp and dd_hosp != '(เลือก)':
+    dd_df = merged[merged['name'] == dd_hosp].copy()
+    if dd_df.empty and not transactions_df.empty:
+        dd_df = transactions_df.merge(hospitals_df, left_on='hospital_id', right_on='id', how='left')
+        dd_df = dd_df[dd_df['name'] == dd_hosp].copy()
+    if dd_df.empty:
+        st.info('ยังไม่มีข้อมูลสำหรับโรงพยาบาลนี้ในช่วงวันที่ที่เลือก')
+    else:
+        k1, k2, k3 = st.columns(3)
+        with k1: st.metric('Transactions (ช่วงที่เลือก)', f"{int(dd_df['transactions_count'].sum()):,}")
+        with k2: st.metric('Rider Active รวม', f"{int(dd_df['riders_active'].sum()):,}")
+        with k3:
+            cap = int(dd_df['riders_count'].sum()) if 'riders_count' in dd_df.columns else 0
+            st.metric('Rider Capacity รวม', f"{cap:,}")
+        d1 = dd_df.groupby('date').agg({'transactions_count':'sum','riders_active':'sum','riders_count':'sum'}).reset_index()
+        d1m = d1.melt(id_vars=['date'], value_vars=['transactions_count','riders_active'], var_name='metric', value_name='value')
+        d1m['metric'] = d1m['metric'].map({'transactions_count':'Transactions','riders_active':'Rider Active'})
+        figd = px.bar(d1m, x='date', y='value', color='metric', text='value', labels={'date':'วันที่','value':'ค่า','metric':'ตัวชี้วัด'})
+        figd = prettify_bar(figd, y_title='จำนวน')
+        st.plotly_chart(figd, use_container_width=True)
+        dd_df['month'] = pd.to_datetime(dd_df['date']).astype('datetime64[M]').astype(str)
+        m1 = dd_df.groupby('month').agg({'transactions_count':'sum','riders_active':'sum'}).reset_index()
+        m1m = m1.melt(id_vars=['month'], value_vars=['transactions_count','riders_active'], var_name='metric', value_name='value')
+        m1m['metric'] = m1m['metric'].map({'transactions_count':'Transactions','riders_active':'Rider Active'})
+        figm = px.bar(m1m, x='month', y='value', color='metric', text='value', labels={'month':'เดือน','value':'ค่า','metric':'ตัวชี้วัด'})
+        figm = prettify_bar(figm, y_title='จำนวน')
+        st.plotly_chart(figm, use_container_width=True)
+        if show_util:
+            util = dd_df.groupby('date').agg({'riders_active':'sum','riders_count':'sum'}).reset_index()
+            util['Utilization %'] = (util['riders_active'] / util['riders_count']).replace([pd.NA, float('inf')], 0)*100
+            figu = px.bar(util, x='date', y='Utilization %', text=util['Utilization %'].round(1).astype(str)+'%')
+            figu = prettify_bar(figu, y_title='เปอร์เซ็นต์การใช้งาน')
+            st.plotly_chart(figu, use_container_width=True)
+        sbuff = StringIO(); dd_df.to_csv(sbuff, index=False)
+        st.download_button('ดาวน์โหลด CSV ของโรงพยาบาลนี้', data=sbuff.getvalue().encode('utf-8-sig'),
+                           file_name=f"{dd_hosp}_filtered.csv", mime='text/csv', key='dd_dl')
+
+# =========================
 # ---------- ADMIN ---------
 # =========================
 st.markdown('---')
-st.markdown('## 🛠️ หน้าการจัดการ (Admin)')
+st.markdown('## 🛠️ หน้าการจัดการ (Admin / Settings)')
 if not st.session_state.auth['ok']:
     st.warning('เข้าสู่ระบบทาง Sidebar เพื่อจัดการข้อมูล')
 else:
-    tabs = st.tabs(['จัดการโรงพยาบาล', 'จัดการ Transaction', 'จัดการผู้ดูแล (Admin)'])
+    tabs = st.tabs(['จัดการโรงพยาบาล', 'จัดการ Transaction', 'จัดการผู้ดูแล', 'ตั้งค่า & ข้อมูลตัวอย่าง'])
 
     # ----- Manage Hospitals -----
     with tabs[0]:
         st.markdown('### โรงพยาบาล')
         with st.expander('➕ เพิ่ม/แก้ไข โรงพยาบาล'):
-            edit_mode = st.checkbox('แก้ไขรายการที่มีอยู่', value=False)
+            edit_mode = st.checkbox('แก้ไขรายการที่มีอยู่', value=False, key='h_edit')
             if edit_mode and not hospitals_df.empty:
-                row = st.selectbox('เลือกโรงพยาบาลที่จะแก้ไข', hospitals_df['name'].tolist())
+                row = st.selectbox('เลือกโรงพยาบาลที่จะแก้ไข', hospitals_df['name'].tolist(), key='h_pick')
                 row_data = hospitals_df[hospitals_df['name']==row].iloc[0].to_dict()
             else:
                 row_data = {'id': str(uuid.uuid4())}
 
-            name = st.text_input('ชื่อโรงพยาบาล', value=row_data.get('name', ''))
+            name = st.text_input('ชื่อโรงพยาบาล', value=row_data.get('name', ''), key='h_name')
             provinces = list(TH_PROVINCES.keys())
             province_default = provinces.index(row_data.get('province')) if row_data.get('province') in provinces else 0
-            province = st.selectbox('จังหวัด', provinces, index=province_default)
+            province = st.selectbox('จังหวัด', provinces, index=province_default, key='h_prov')
             region = TH_PROVINCES.get(province, 'ภาคกลาง')
             st.info(f'ภูมิภาค: **{region}** (กำหนดอัตโนมัติจากจังหวัด)')
             site = st.selectbox('SiteControl (ทีม)', SITE_CONTROL_CHOICES,
-                                index=SITE_CONTROL_CHOICES.index(row_data.get('site_control')) if row_data.get('site_control') in SITE_CONTROL_CHOICES else 0)
+                                index=SITE_CONTROL_CHOICES.index(row_data.get('site_control')) if row_data.get('site_control') in SITE_CONTROL_CHOICES else 0,
+                                key='h_site')
             system = st.selectbox('ระบบที่ใช้', SYSTEM_CHOICES,
-                                  index=SYSTEM_CHOICES.index(row_data.get('system_type')) if row_data.get('system_type') in SYSTEM_CHOICES else 0)
+                                  index=SYSTEM_CHOICES.index(row_data.get('system_type')) if row_data.get('system_type') in SYSTEM_CHOICES else 0,
+                                  key='h_sys')
             service_models = st.multiselect('โมเดลบริการ (เลือกได้หลายอัน)', SERVICE_MODEL_CHOICES,
-                                            default=[x for x in (row_data.get('service_models') or []) if x in SERVICE_MODEL_CHOICES])
-            riders_count = st.number_input('จำนวน Rider (Capacity)', min_value=0, step=1, value=int(row_data.get('riders_count',0)))
+                                            default=[x for x in (row_data.get('service_models') or []) if x in SERVICE_MODEL_CHOICES], key='h_models')
+            riders_count = st.number_input('จำนวน Rider (Capacity)', min_value=0, step=1,
+                                           value=int(row_data.get('riders_count',0)), key='h_riders')
 
             c1, c2 = st.columns(2)
             with c1:
-                if st.button('บันทึกโรงพยาบาล'):
+                if st.button('บันทึกโรงพยาบาล', key='h_save'):
                     payload = {
                         'id': row_data.get('id', str(uuid.uuid4())),
                         'name': name.strip(),
@@ -369,7 +486,7 @@ else:
                             st.success('เพิ่มโรงพยาบาลแล้ว')
                         reload_all()
             with c2:
-                if edit_mode and st.button('🗑️ ลบโรงพยาบาล'):
+                if edit_mode and st.button('🗑️ ลบโรงพยาบาล', key='h_del'):
                     sb.table('hospitals').delete().eq('id', row_data['id']).execute()
                     st.success('ลบแล้ว')
                     reload_all()
@@ -396,7 +513,7 @@ else:
                 tx_date = st.date_input('วันที่', value=date.today(), key='tx_add_d')
                 tx_num = st.number_input('จำนวน Transactions', min_value=0, step=1, key='tx_add_n')
                 riders_active = st.number_input('Rider Active', min_value=0, step=1, key='tx_add_ra')
-                if st.button('บันทึก Transaction'):
+                if st.button('บันทึก Transaction', key='tx_add_btn'):
                     hid = hosp_map[hname]
                     if not validate_riders(hid, int(riders_active)):
                         st.error('Rider Active มากกว่า Capacity ของโรงพยาบาลนี้')
@@ -409,6 +526,11 @@ else:
                             'riders_active': int(riders_active)
                         }).execute()
                         st.success('เพิ่มข้อมูลแล้ว')
+                        # แจ้งเตือน Utilization หากเกินเกณฑ์
+                        rc = int(hospitals_df.loc[hospitals_df['id']==hid, 'riders_count'].iloc[0])
+                        util_pct = (int(riders_active)/rc*100) if rc else 0
+                        if util_pct >= targets.get('utilization_alert_pct', 100):
+                            send_line_notify(f"[Telemed] Utilization {util_pct:.0f}% เกินเกณฑ์ที่ตั้งไว้ {targets.get('utilization_alert_pct')}% ({hname})")
                         reload_all()
 
             with st.expander('📥 เพิ่ม Transaction แบบอัปโหลด CSV (คอลัมน์: hospital_name,date,transactions_count,riders_active)'):
@@ -431,7 +553,7 @@ else:
                                 hid = name_to_id[r['hospital_name']]
                                 ra = int(r['riders_active'])
                                 if not validate_riders(hid, ra):
-                                    st.error(f'Rider Active ({ra}) ของแถวโรงพยาบาล {r['hospital_name']} มากกว่า Capacity')
+                                    st.error(f'Rider Active ({ra}) ของแถวโรงพยาบาล {r["hospital_name"]} มากกว่า Capacity')
                                     rows = []
                                     break
                                 rows.append({
@@ -441,7 +563,7 @@ else:
                                     'transactions_count': int(r['transactions_count']),
                                     'riders_active': ra
                                 })
-                            if rows and st.button('บันทึกข้อมูลจาก CSV ทั้งหมด'):
+                            if rows and st.button('บันทึกข้อมูลจาก CSV ทั้งหมด', key='tx_csv_btn'):
                                 sb.table('transactions').insert(rows).execute()
                                 st.success(f'เพิ่ม {len(rows)} แถวเรียบร้อย')
                                 reload_all()
@@ -465,15 +587,16 @@ else:
             if raw_tx.empty:
                 st.info('ยังไม่มีข้อมูล')
             else:
-                pick_id = st.selectbox('เลือกแถวเพื่อแก้ไข', raw_tx['id'].tolist())
+                pick_id = st.selectbox('เลือกแถวเพื่อแก้ไข', raw_tx['id'].tolist(), key='tx_pick')
                 row = raw_tx[raw_tx['id']==pick_id].iloc[0].to_dict()
                 h_id_to_name = {r['id']: r['name'] for _, r in hospitals_df.iterrows()}
                 hosp_map = {r['name']: r['id'] for _, r in hospitals_df.iterrows()}
                 hsel = st.selectbox('โรงพยาบาล', list(hosp_map.keys()),
-                                    index=list(hosp_map.keys()).index(h_id_to_name.get(row['hospital_id'], list(hosp_map.keys())[0])))
-                dsel = st.date_input('วันที่', value=pd.to_datetime(row['date']).date())
-                nsel = st.number_input('Transactions', min_value=0, step=1, value=int(row.get('transactions_count',0)))
-                rsel = st.number_input('Rider Active', min_value=0, step=1, value=int(row.get('riders_active',0)))
+                                    index=list(hosp_map.keys()).index(h_id_to_name.get(row['hospital_id'], list(hosp_map.keys())[0])),
+                                    key='tx_edit_h')
+                dsel = st.date_input('วันที่', value=pd.to_datetime(row['date']).date(), key='tx_edit_d')
+                nsel = st.number_input('Transactions', min_value=0, step=1, value=int(row.get('transactions_count',0)), key='tx_edit_n')
+                rsel = st.number_input('Rider Active', min_value=0, step=1, value=int(row.get('riders_active',0)), key='tx_edit_ra')
                 c3, c4 = st.columns(2)
                 with c3:
                     if st.button('บันทึกการแก้ไข', key='btn_tx_save'):
@@ -505,9 +628,9 @@ else:
             st.dataframe(admins_df[['username']], use_container_width=True)
 
         with st.expander('➕ เพิ่มผู้ดูแลใหม่'):
-            nu = st.text_input('Username ใหม่')
-            npw = st.text_input('Password', type='password')
-            if st.button('เพิ่มผู้ดูแล'):
+            nu = st.text_input('Username ใหม่', key='adm_new_u')
+            npw = st.text_input('Password', type='password', key='adm_new_p')
+            if st.button('เพิ่มผู้ดูแล', key='adm_add'):
                 if not nu or not npw:
                     st.error('กรอกให้ครบ')
                 elif not admins_df.empty and any(admins_df['username'].str.lower() == nu.lower()):
@@ -525,11 +648,11 @@ else:
             if admins_df.empty:
                 st.info('ยังไม่มีผู้ดูแล')
             else:
-                selu = st.selectbox('เลือกผู้ใช้', admins_df['username'].tolist())
-                newpw = st.text_input('รหัสผ่านใหม่', type='password')
+                selu = st.selectbox('เลือกผู้ใช้', admins_df['username'].tolist(), key='adm_pick')
+                newpw = st.text_input('รหัสผ่านใหม่', type='password', key='adm_newpw')
                 c5, c6 = st.columns(2)
                 with c5:
-                    if st.button('เปลี่ยนรหัสผ่าน'):
+                    if st.button('เปลี่ยนรหัสผ่าน', key='adm_chg'):
                         if not newpw:
                             st.error('กรุณากรอกรหัสผ่านใหม่')
                         else:
@@ -537,13 +660,80 @@ else:
                             st.success('เปลี่ยนรหัสผ่านแล้ว')
                             reload_all()
                 with c6:
-                    if st.button('ลบผู้ดูแล'):
+                    if st.button('ลบผู้ดูแล', key='adm_del'):
                         sb.table('admins').delete().eq('username', selu).execute()
                         st.success('ลบแล้ว')
                         reload_all()
 
+    # ----- Settings & Seed -----
+    with tabs[3]:
+        st.markdown('### ตั้งค่าเป้าหมาย / LINE Notify / ข้อมูลตัวอย่าง')
+        tg1, tg2 = st.columns(2)
+        with tg1:
+            daily_target = st.number_input('เป้ายอดรายวัน (Transactions ต่อวัน)', min_value=0, step=1,
+                                           value=int(targets.get('daily_transactions', 50)), key='tgt_daily')
+        with tg2:
+            util_thresh = st.number_input('แจ้งเตือนเมื่อ Utilization ≥ (%)', min_value=0, max_value=100, step=1,
+                                          value=int(targets.get('utilization_alert_pct', 90)), key='tgt_util')
+        if st.button('บันทึกเป้าหมาย', key='tgt_save'):
+            set_setting('targets', {'daily_transactions': int(daily_target), 'utilization_alert_pct': int(util_thresh)})
+            st.success('บันทึกเป้าหมายแล้ว')
+            reload_all()
+
+        st.markdown('#### LINE Notify (ไม่บังคับ)')
+        en_line = st.checkbox('เปิดใช้ LINE Notify', value=bool(line_cfg.get('enabled')), key='line_en')
+        token = st.text_input('LINE Notify Token', value=line_cfg.get('token',''), type='password', key='line_tok')
+        if st.button('บันทึกการตั้งค่า LINE', key='line_save'):
+            set_setting('line_notify', {'enabled': bool(en_line), 'token': token.strip()})
+            st.success('บันทึก LINE Notify แล้ว')
+            reload_all()
+
+        st.markdown('#### ข้อมูลตัวอย่าง (Seed/Reset)')
+        cseed, creset = st.columns(2)
+        with cseed:
+            if st.button('เติมข้อมูลตัวอย่าง (5 รพ. x 3 วัน)', key='seed_btn'):
+                demo_hosps = [
+                    ('รพ.หาดใหญ่', 'สงขลา', 'ภาคใต้', 'ทีมใต้', 'WebPortal', ['Rider','App','Station to Station'], 5),
+                    ('รพ.เชียงใหม่','เชียงใหม่','ภาคเหนือ','ทีมเหนือ','HOSxpV4', ['Rider','Station to Station'], 7),
+                    ('รพ.ขอนแก่น','ขอนแก่น','ภาคอีสาน','ทีมอีสาน','HOSxpV3', ['App'], 4),
+                    ('รพ.ชลบุรี','ชลบุรี','ภาคตะวันออก','ทีมเหนือ','WebPortal', ['Rider','App'], 6),
+                    ('รพ.นครศรีธรรมราช','นครศรีธรรมราช','ภาคใต้','ทีมใต้','HOSxpV4', ['Rider','App'], 6),
+                ]
+                name_to_id = {}
+                for n,prov,reg,site,sys,models,rc in demo_hosps:
+                    exist = sb.table('hospitals').select('*').eq('name', n).execute().data
+                    if exist:
+                        hid = exist[0]['id']; name_to_id[n]=hid
+                    else:
+                        hid = str(uuid.uuid4()); name_to_id[n]=hid
+                        sb.table('hospitals').insert({'id':hid,'name':n,'province':prov,'region':reg,'site_control':site,'system_type':sys,'service_models':models,'riders_count':rc}).execute()
+                from datetime import date
+                days = [date.today()-timedelta(days=2), date.today()-timedelta(days=1), date.today()]
+                demo_rows = []
+                import random
+                for n,hid in name_to_id.items():
+                    for d in days:
+                        t = random.randint(20,60)
+                        ra = random.randint(2,7)
+                        demo_rows.append({'id':str(uuid.uuid4()),'hospital_id':hid,'date':d.isoformat(),'transactions_count':t,'riders_active':ra})
+                if demo_rows:
+                    sb.table('transactions').insert(demo_rows).execute()
+                st.success('เติมข้อมูลตัวอย่างเรียบร้อย')
+                reload_all()
+        with creset:
+            if st.button('ลบข้อมูลตัวอย่าง (5 รพ.ข้างต้น + tx)', key='reset_btn'):
+                target_names = ['รพ.หาดใหญ่','รพ.เชียงใหม่','รพ.ขอนแก่น','รพ.ชลบุรี','รพ.นครศรีธรรมราช']
+                ids = sb.table('hospitals').select('id').in_('name', target_names).execute().data
+                ids = [r['id'] for r in ids]
+                if ids:
+                    for hid in ids:
+                        sb.table('transactions').delete().eq('hospital_id', hid).execute()
+                    sb.table('hospitals').delete().in_('id', ids).execute()
+                st.success('ลบข้อมูลตัวอย่างแล้ว')
+                reload_all()
+
 st.markdown('---')
-st.caption('Telemedicine Dashboard • pastel theme • built with Streamlit + Supabase')
+st.caption('Telemedicine Dashboard • pastel/dark • Streamlit + Supabase')
 
 # --------------------------- SCHEMA (for reference) ---------------------------
 SCHEMA_SQL = r'''
@@ -581,15 +771,25 @@ create table if not exists public.transactions (
 create index if not exists idx_tx_hospital_date on public.transactions(hospital_id, date);
 create index if not exists idx_hosp_site on public.hospitals(site_control);
 
+-- Settings (key-value JSON)
+create table if not exists public.settings (
+  key text primary key,
+  value jsonb not null,
+  updated_at timestamp with time zone default now()
+);
+
 alter table public.admins enable row level security;
 alter table public.hospitals enable row level security;
 alter table public.transactions enable row level security;
+alter table public.settings enable row level security;
 
 drop policy if exists p_admins_all on public.admins;
 drop policy if exists p_hosp_all on public.hospitals;
 drop policy if exists p_tx_all on public.transactions;
+drop policy if exists p_settings_all on public.settings;
 
 create policy p_admins_all on public.admins for all using (true) with check (true);
 create policy p_hosp_all on public.hospitals for all using (true) with check (true);
 create policy p_tx_all on public.transactions for all using (true) with check (true);
+create policy p_settings_all on public.settings for all using (true) with check (true);
 '''
