@@ -138,7 +138,7 @@ def load_df(table: str) -> pd.DataFrame:
 
 def reload_all():
     load_df.clear()
-    st.experimental_rerun()
+    st.rerun()
 
 # Ensure default admin exists
 def ensure_default_admin():
@@ -170,14 +170,14 @@ with st.sidebar:
             if rows and verify_pw(p, rows[0]["password_hash"]):
                 st.session_state.auth = {"ok": True, "user": rows[0]["username"]}
                 st.success("เข้าสู่ระบบสำเร็จ")
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.error("ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
     else:
         st.write(f"✅ Logged in as **{st.session_state.auth['user']}**")
         if st.button("Logout"):
             st.session_state.auth = {"ok": False, "user": None}
-            st.experimental_rerun()
+            st.rerun()
 
 # =========================
 # --------- FILTERS --------
