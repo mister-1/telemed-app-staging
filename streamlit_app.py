@@ -1,12 +1,9 @@
-# DashBoard Telemedicine — v3.6
-# - FIX dropdown error: avoid writing to widget state; manage our own state + rerun
-# - Dropdown (popover) filters with search + Select All / Clear + Done (auto-close)
-# - Default date filter: today..today + quick Today / This month
-# - KPI cards styled (Light/Dark)
-# - Prevent duplicate transactions (same hospital+date)
-# - Stable dashboard (sanitized defaults, plotly table)
-# - Admin: cascade delete hospital -> transactions, edit/delete tx by hospital+date
-# - Version in sidebar, screenshot full page
+# DashBoard Telemedicine — v3.7
+# - Add Tx duplicate UX: go-to-edit & cancel buttons
+# - Admin tabs always show data (admins/settings) with raw tables when present
+# - Dashboard: no early return; show placeholders if no data (avoid "missing one chart")
+# - Filter area: cleaner layout (section header, reset button, tidy columns)
+# - Dropdown multiselects safe (no widget-state overwrites)
 
 import os, uuid, json, bcrypt, requests, random
 import pandas as pd
@@ -17,7 +14,7 @@ from typing import List
 import streamlit as st
 from supabase import create_client, Client
 
-APP_VERSION = "v3.6"
+APP_VERSION = "v3.7"
 
 # ---------------- App / Theme ----------------
 st.set_page_config(page_title="DashBoard Telemedicine", page_icon="📊", layout="wide")
@@ -105,6 +102,7 @@ st.markdown(f"""
   }}
   .kpi-title {{ font-weight:600; opacity:.85; }}
   .kpi-value {{ font-size:1.8rem; font-weight:700; margin-top:.25rem; }}
+  .section-title {{ font-weight:600; margin-bottom: .25rem; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -142,11 +140,9 @@ def th_date(d: date) -> str:
 def multiselect_dropdown(label: str, options: list, state_key: str, default_all: bool = True):
     """
     Dropdown (popover/expander) + search + Select All / Clear / Done.
-    ไม่เขียนค่าไปยัง widget key ใด ๆ เพื่อเลี่ยง StreamlitAPIException
-    เก็บสถานะไว้ใน st.session_state[state_key] เท่านั้น แล้ว rerun หลังคลิกปุ่ม
+    เก็บสถานะใน st.session_state[state_key] เท่านั้น แล้ว rerun หลังคลิกปุ่ม
     """
     options = options or []
-    # init & sanitize current selection in our own state
     current = st.session_state.get(state_key, options[:] if default_all else [])
     current = [x for x in current if x in options]
     st.session_state[state_key] = current
@@ -154,64 +150,77 @@ def multiselect_dropdown(label: str, options: list, state_key: str, default_all:
     use_pop = hasattr(st, "popover")
     container = st.popover(label) if use_pop else st.expander(label, expanded=False)
     with container:
-        sel = st.multiselect(
-            " ", options=options, default=current,
-            label_visibility="collapsed", placeholder="พิมพ์เพื่อค้นหา..."
-        )
+        sel = st.multiselect(" ", options=options, default=current,
+                             label_visibility="collapsed", placeholder="พิมพ์เพื่อค้นหา...")
         c1, c2, c3 = st.columns(3)
         with c1:
             if st.button("เลือกทั้งหมด", key=f"{state_key}_all_btn"):
-                st.session_state[state_key] = options[:]
-                rerun()
+                st.session_state[state_key] = options[:]; rerun()
         with c2:
             if st.button("ล้างทั้งหมด", key=f"{state_key}_clear_btn"):
-                st.session_state[state_key] = []
-                rerun()
+                st.session_state[state_key] = []; rerun()
         with c3:
             if st.button("เสร็จสิ้น ✅", key=f"{state_key}_done_btn"):
-                st.session_state[state_key] = sel or []
-                rerun()
+                st.session_state[state_key] = sel or []; rerun()
 
-    # sync เมื่อผู้ใช้เลือกแต่ไม่กดปุ่ม
     if sel is not None and sel != st.session_state[state_key]:
         st.session_state[state_key] = sel
     return st.session_state[state_key]
 
 # ====================== DASHBOARD ======================
+def render_chart_placeholder(title:str):
+    fig = go.Figure()
+    fig.add_annotation(text="ไม่มีข้อมูล", x=0.5, y=0.5, showarrow=False, font=dict(size=16))
+    fig.update_xaxes(visible=False); fig.update_yaxes(visible=False)
+    fig.update_layout(height=360, margin=dict(l=0,r=0,t=10,b=10))
+    st.markdown(title)
+    st.plotly_chart(fig, use_container_width=True, config={'displaylogo': False})
+
 def render_dashboard():
     st.markdown("# DashBoard Telemedicine")
 
     hospitals_df = load_df('hospitals')
     tx_df = load_df('transactions')
 
-    # ---- Date filter (default: today..today) + quick buttons ----
+    # ---------- Filters area (tidy layout) ----------
+    st.markdown("### 🎛️ ตัวกรอง")
+    # default date range = today..today
     if 'date_range' not in st.session_state:
         today = date.today()
         st.session_state['date_range'] = (today, today)
-    f1,f2,f3,f4 = st.columns([1.3,1.6,1.4,1])
-    with f1:
+
+    c_row1_left, c_row1_mid, c_row1_right = st.columns([1.6, 1.2, 1.2])
+    with c_row1_left:
         today = date.today()
         dr = st.date_input('📅 ช่วงวันที่', value=st.session_state['date_range'])
         if isinstance(dr, tuple) and len(dr)==2:
             st.session_state['date_range'] = dr
-    with f2:
-        c1,c2 = st.columns(2)
-        with c1:
+    with c_row1_mid:
+        colA, colB = st.columns(2)
+        with colA:
             if st.button('Today'):
                 st.session_state['date_range'] = (today, today); rerun()
-        with c2:
+        with colB:
             if st.button('เดือนนี้'):
                 first = today.replace(day=1)
                 st.session_state['date_range'] = (first, today); rerun()
+    with c_row1_right:
+        if st.button('↺ Reset ตัวกรอง'):
+            # reset date to today..today and clear selections
+            st.session_state['date_range'] = (today, today)
+            st.session_state['hosp_sel'] = []
+            st.session_state['site_filter'] = []
+            rerun()
 
-    # ---- Dropdown filters (popover) ----
-    with f3:
+    # Row 2: dropdowns
+    c_row2_left, c_row2_right = st.columns([1.6,1.2])
+    with c_row2_left:
         all_names = sorted(hospitals_df['name'].dropna().unique().tolist()) if 'name' in hospitals_df.columns else []
         selected_hospitals = multiselect_dropdown("🏥 โรงพยาบาล", all_names, "hosp_sel", default_all=True)
-    with f4:
+    with c_row2_right:
         selected_sites = multiselect_dropdown("🧭 ทีมภูมิภาค", SITE_CONTROL_CHOICES, "site_filter", default_all=True)
 
-    # ---- capture whole page ----
+    # ---- Capture whole page ----
     cap_col = st.columns([1,3,1])[0]
     with cap_col:
         if st.button('📸 แคปหน้าจอ'):
@@ -259,77 +268,94 @@ def render_dashboard():
     ]:
         col.markdown(f"<div class='kpi-card'><div class='kpi-title'>{title}</div><div class='kpi-value'>{val}</div></div>", unsafe_allow_html=True)
 
-    if df.empty:
-        st.info('ไม่มีข้อมูลในช่วงที่เลือก'); return
-
     # ---- Pie by SiteControl ----
-    st.markdown('#### จำนวน Transaction ตามทีมภูมิภาค (กราฟวงกลม)')
-    gsite = df.groupby('site_control').agg({'transactions_count':'sum'}).reset_index().sort_values('transactions_count', ascending=False)
-    pie = px.pie(gsite, names='site_control', values='transactions_count',
-                 color='site_control', color_discrete_sequence=PALETTE, hole=0.55)
-    pie.update_traces(textposition='outside',
-                      texttemplate='<b>%{label}</b><br>%{value:,} (%{percent:.1%})',
-                      marker=dict(line=dict(color=('#fff' if not DARK else '#111'), width=2)),
-                      pull=[0.02]*len(gsite))
-    pie.update_layout(annotations=[dict(text=f"{total_tx:,}<br>รวม", x=0.5, y=0.5, showarrow=False, font=dict(size=18))])
-    st.plotly_chart(pie, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})
+    if not df.empty:
+        gsite = df.groupby('site_control').agg({'transactions_count':'sum'}).reset_index().sort_values('transactions_count', ascending=False)
+        if not gsite.empty:
+            st.markdown('#### จำนวน Transaction ตามทีมภูมิภาค (กราฟวงกลม)')
+            pie = px.pie(gsite, names='site_control', values='transactions_count',
+                         color='site_control', color_discrete_sequence=PALETTE, hole=0.55)
+            pie.update_traces(textposition='outside',
+                              texttemplate='<b>%{label}</b><br>%{value:,} (%{percent:.1%})',
+                              marker=dict(line=dict(color=('#fff' if not DARK else '#111'), width=2)),
+                              pull=[0.02]*len(gsite))
+            pie.update_layout(annotations=[dict(text=f"{total_tx:,}<br>รวม", x=0.5, y=0.5, showarrow=False, font=dict(size=18))])
+            st.plotly_chart(pie, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})
+        else:
+            render_chart_placeholder('#### จำนวน Transaction ตามทีมภูมิภาค (กราฟวงกลม)')
+    else:
+        render_chart_placeholder('#### จำนวน Transaction ตามทีมภูมิภาค (กราฟวงกลม)')
 
     # ---- Horizontal Bar by Hospital ----
-    st.markdown('#### ภาพรวมต่อโรงพยาบาล (แนวนอน)')
-    gh = df.groupby('name').agg({'transactions_count':'sum'}).reset_index().sort_values('transactions_count', ascending=True)
-    bar = px.bar(gh, y='name', x='transactions_count', orientation='h', text='transactions_count',
-                 color='name', color_discrete_sequence=PALETTE)
-    bar.update_traces(textposition='outside')
-    bar.update_layout(showlegend=False, height=max(520, 30*len(gh)+200), margin=dict(l=140,r=40,t=30,b=40))
-    st.plotly_chart(bar, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})
+    if not df.empty:
+        gh = df.groupby('name').agg({'transactions_count':'sum'}).reset_index().sort_values('transactions_count', ascending=True)
+        if not gh.empty:
+            st.markdown('#### ภาพรวมต่อโรงพยาบาล (แนวนอน)')
+            bar = px.bar(gh, y='name', x='transactions_count', orientation='h', text='transactions_count',
+                        color='name', color_discrete_sequence=PALETTE)
+            bar.update_traces(textposition='outside')
+            bar.update_layout(showlegend=False, height=max(520, 30*len(gh)+200), margin=dict(l=140,r=40,t=30,b=40))
+            st.plotly_chart(bar, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})
+        else:
+            render_chart_placeholder('#### ภาพรวมต่อโรงพยาบาล (แนวนอน)')
+    else:
+        render_chart_placeholder('#### ภาพรวมต่อโรงพยาบาล (แนวนอน)')
 
     # ---- Daily Trend line ----
-    st.markdown('#### แนวโน้มรายวัน (กราฟเส้น)')
-    daily = df.groupby('date').agg({'transactions_count':'sum','riders_active':'sum'}).reset_index().sort_values('date')
-    if not daily.empty:
-        TH = ['วันจันทร์','วันอังคาร','วันพุธ','วันพฤหัสบดี','วันศุกร์','วันเสาร์','วันอาทิตย์']
-        labels = daily['date'].apply(lambda d: f"{TH[pd.to_datetime(d).dayofweek]} {pd.to_datetime(d).day}/{pd.to_datetime(d).month}/{str(pd.to_datetime(d).year)[-2:]}")
-        ln = go.Figure()
-        ln.add_trace(go.Scatter(x=labels, y=daily['transactions_count'], mode='lines+markers+text',
-                                name='Transactions', text=daily['transactions_count'],
-                                textposition='top center', line=dict(width=3)))
-        ln.add_trace(go.Scatter(x=labels, y=daily['riders_active'], mode='lines+markers',
-                                name='Rider Active', visible='legendonly',
-                                line=dict(width=2, dash='dot')))
-        ln.update_layout(xaxis_title='วัน/เดือน/ปี', yaxis_title='จำนวน',
-                         xaxis_tickangle=-40, margin=dict(t=30,r=20,b=80,l=60))
-        st.plotly_chart(ln, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})
+    if not df.empty:
+        daily = df.groupby('date').agg({'transactions_count':'sum','riders_active':'sum'}).reset_index().sort_values('date')
+        if not daily.empty:
+            st.markdown('#### แนวโน้มรายวัน (กราฟเส้น)')
+            TH = ['วันจันทร์','วันอังคาร','วันพุธ','วันพฤหัสบดี','วันศุกร์','วันเสาร์','วันอาทิตย์']
+            labels = daily['date'].apply(lambda d: f"{TH[pd.to_datetime(d).dayofweek]} {pd.to_datetime(d).day}/{pd.to_datetime(d).month}/{str(pd.to_datetime(d).year)[-2:]}")
+            ln = go.Figure()
+            ln.add_trace(go.Scatter(x=labels, y=daily['transactions_count'], mode='lines+markers+text',
+                                    name='Transactions', text=daily['transactions_count'],
+                                    textposition='top center', line=dict(width=3)))
+            ln.add_trace(go.Scatter(x=labels, y=daily['riders_active'], mode='lines+markers',
+                                    name='Rider Active', visible='legendonly',
+                                    line=dict(width=2, dash='dot')))
+            ln.update_layout(xaxis_title='วัน/เดือน/ปี', yaxis_title='จำนวน',
+                            xaxis_tickangle=-40, margin=dict(t=30,r=20,b=80,l=60))
+            st.plotly_chart(ln, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})
+        else:
+            render_chart_placeholder('#### แนวโน้มรายวัน (กราฟเส้น)')
+    else:
+        render_chart_placeholder('#### แนวโน้มรายวัน (กราฟเส้น)')
 
     # ---- Table by site (Plotly Table) ----
     st.markdown('#### ตารางจำนวน Transaction แยกตามทีมภูมิภาค')
-    site_tbl = df.groupby('site_control').agg(
-        Transactions=('transactions_count','sum'),
-        Rider_Active=('riders_active','sum'),
-        Riders_Total=('riders_count','sum')
-    ).reset_index().rename(columns={'site_control':'ทีมภูมิภาค'})
-    if not site_tbl.empty:
-        show_df = site_tbl.copy()
-        show_df['Transactions']  = show_df['Transactions'].map('{:,}'.format)
-        show_df['Rider_Active']  = show_df['Rider_Active'].map('{:,}'.format)
-        show_df['Riders_Total']  = show_df['Riders_Total'].map('{:,}'.format)
+    if not df.empty:
+        site_tbl = df.groupby('site_control').agg(
+            Transactions=('transactions_count','sum'),
+            Rider_Active=('riders_active','sum'),
+            Riders_Total=('riders_count','sum')
+        ).reset_index().rename(columns={'site_control':'ทีมภูมิภาค'})
+        if not site_tbl.empty:
+            show_df = site_tbl.copy()
+            show_df['Transactions']  = show_df['Transactions'].map('{:,}'.format)
+            show_df['Rider_Active']  = show_df['Rider_Active'].map('{:,}'.format)
+            show_df['Riders_Total']  = show_df['Riders_Total'].map('{:,}'.format)
 
-        header_fill = '#0b1220' if DARK else '#EEF2FF'
-        header_font = '#E5E7EB' if DARK else '#334155'
-        rgba = [
-            'rgba(167,199,231,0.15)','rgba(248,200,220,0.15)','rgba(182,226,211,0.15)',
-            'rgba(253,226,179,0.15)','rgba(234,215,247,0.15)','rgba(205,229,240,0.15)'
-        ]
-        row_colors = [rgba[i % len(rgba)] for i in range(len(show_df))]
-        fill_matrix = [row_colors]*len(show_df.columns)
+            header_fill = '#0b1220' if DARK else '#EEF2FF'
+            header_font = '#E5E7EB' if DARK else '#334155'
+            rgba = [
+                'rgba(167,199,231,0.15)','rgba(248,200,220,0.15)','rgba(182,226,211,0.15)',
+                'rgba(253,226,179,0.15)','rgba(234,215,247,0.15)','rgba(205,229,240,0.15)'
+            ]
+            row_colors = [rgba[i % len(rgba)] for i in range(len(show_df))]
+            fill_matrix = [row_colors]*len(show_df.columns)
 
-        figt = go.Figure(data=[go.Table(
-            header=dict(values=list(show_df.columns), fill_color=header_fill, font=dict(color=header_font, size=12),
-                        align='left', height=30),
-            cells=dict(values=[show_df[c] for c in show_df.columns], fill_color=fill_matrix,
-                       align='left', height=28)
-        )])
-        figt.update_layout(margin=dict(l=0,r=0,t=0,b=0))
-        st.plotly_chart(figt, use_container_width=True, config={'displaylogo': False})
+            figt = go.Figure(data=[go.Table(
+                header=dict(values=list(show_df.columns), fill_color=header_fill, font=dict(color=header_font, size=12),
+                            align='left', height=30),
+                cells=dict(values=[show_df[c] for c in show_df.columns], fill_color=fill_matrix,
+                        align='left', height=28)
+            )])
+            figt.update_layout(margin=dict(l=0,r=0,t=0,b=0))
+            st.plotly_chart(figt, use_container_width=True, config={'displaylogo': False})
+        else:
+            st.info('ไม่มีข้อมูลตารางในช่วงที่เลือก')
     else:
         st.info('ไม่มีข้อมูลตารางในช่วงที่เลือก')
 
@@ -404,27 +430,45 @@ def render_admin():
         else:
             name2id = {r['name']:r['id'] for _,r in hospitals_df.iterrows()}
 
-            # เพิ่ม (prevent duplicate)
+            # เพิ่ม (prevent duplicate + UX)
             with st.expander('➕ เพิ่ม Transaction รายวัน'):
                 hname = st.selectbox('โรงพยาบาล (ค้นหาได้)', list(name2id.keys()), key='add_tx_hosp')
                 tx_date = st.date_input('วันที่', value=date.today(), key='add_tx_date')
                 tx_num = st.number_input('Transactions', min_value=0, step=1, key='add_tx_num')
                 riders_active = st.number_input('Rider Active', min_value=0, step=1, key='add_tx_ra')
-                if st.button('บันทึก Transaction', key='add_tx_btn'):
-                    hid = name2id[hname]
-                    try:
-                        existed = sb.table('transactions').select('id').eq('hospital_id', hid).eq('date', tx_date.isoformat()).limit(1).execute().data
-                        if existed:
-                            st.error('มีรายการของโรงพยาบาลนี้ในวันที่นี้อยู่แล้ว — โปรดแก้ไขรายการเดิมแทน'); st.stop()
-                        rc = int(hospitals_df.loc[hospitals_df['id']==hid,'riders_count'].iloc[0])
-                        if riders_active > rc: st.error('Rider Active มากกว่า Capacity'); st.stop()
-                        sb.table('transactions').insert({
-                            'id':str(uuid.uuid4()),'hospital_id':hid,'date':tx_date.isoformat(),
-                            'transactions_count':int(tx_num),'riders_active':int(riders_active)
-                        }).execute()
-                        st.success('เพิ่มข้อมูลแล้ว'); load_df.clear(); rerun()
-                    except Exception:
-                        st.error('บันทึกไม่สำเร็จ')
+                cbtn1, cbtn2 = st.columns(2)
+                with cbtn1:
+                    if st.button('บันทึก Transaction', key='add_tx_btn'):
+                        hid = name2id[hname]
+                        try:
+                            existed = sb.table('transactions').select('id').eq('hospital_id', hid).eq('date', tx_date.isoformat()).limit(1).execute().data
+                            if existed:
+                                st.warning('ข้อมูลวันที่นี้ของโรงพยาบาลนี้มีอยู่แล้ว กรุณาไป **แก้ไขรายการเดิม** หรือ **ยกเลิก**')
+                                g1, g2 = st.columns(2)
+                                with g1:
+                                    if st.button('➡️ ไปหน้าแก้ไขรายการนี้', key='go_edit_dup'):
+                                        st.session_state['open_edit_tx'] = True
+                                        st.session_state['edit_target_h'] = hname
+                                        st.session_state['edit_target_d'] = tx_date
+                                        rerun()
+                                with g2:
+                                    if st.button('ยกเลิก', key='cancel_dup'):
+                                        # ไม่แตะต้อง widget-state ตรง ๆ แค่ rerun กลับ
+                                        rerun()
+                                st.stop()
+                            rc = int(hospitals_df.loc[hospitals_df['id']==hid,'riders_count'].iloc[0])
+                            if riders_active > rc:
+                                st.error('Rider Active มากกว่า Capacity'); st.stop()
+                            sb.table('transactions').insert({
+                                'id':str(uuid.uuid4()),'hospital_id':hid,'date':tx_date.isoformat(),
+                                'transactions_count':int(tx_num),'riders_active':int(riders_active)
+                            }).execute()
+                            st.success('เพิ่มข้อมูลแล้ว'); load_df.clear(); rerun()
+                        except Exception:
+                            st.error('บันทึกไม่สำเร็จ')
+                with cbtn2:
+                    if st.button('ยกเลิก', key='cancel_add_tx'):
+                        rerun()
 
             # ตาราง (ไม่โชว์ hospital_id + วันที่แบบไทย)
             raw_tx = load_df('transactions')
@@ -438,10 +482,18 @@ def render_admin():
                 st.dataframe(tx_view[show].rename(columns={'name':'โรงพยาบาล','transactions_count':'Transactions','riders_active':'Rider Active'}),
                              use_container_width=True)
 
-            # แก้ไข/ลบ โดยเลือก "โรงพยาบาล + วันที่"
-            with st.expander('✏️ แก้ไข / ลบ ตาม โรงพยาบาล + วันที่'):
-                h_edit = st.selectbox('โรงพยาบาล', list(name2id.keys()), key='edit_pick_h')
-                d_edit = st.date_input('วันที่', value=date.today(), key='edit_pick_d')
+            # แก้ไข/ลบ โดยเลือก "โรงพยาบาล + วันที่"  (รองรับ deep-link จาก duplicate)
+            default_h = st.session_state.get('edit_target_h')
+            default_d = st.session_state.get('edit_target_d', date.today())
+            try:
+                idx_default_h = list(name2id.keys()).index(default_h) if default_h in name2id else 0
+            except Exception:
+                idx_default_h = 0
+            exp_open = st.session_state.get('open_edit_tx', False)
+
+            with st.expander('✏️ แก้ไข / ลบ ตาม โรงพยาบาล + วันที่', expanded=exp_open):
+                h_edit = st.selectbox('โรงพยาบาล', list(name2id.keys()), index=idx_default_h, key='edit_pick_h')
+                d_edit = st.date_input('วันที่', value=default_d, key='edit_pick_d')
                 pick_df = raw_tx[(raw_tx['hospital_id']==name2id[h_edit]) & (pd.to_datetime(raw_tx['date']).dt.date==d_edit)]
                 if pick_df.empty:
                     st.info('ไม่พบข้อมูลของโรงพยาบาล/วันที่นี้')
@@ -456,6 +508,9 @@ def render_admin():
                                 sb.table('transactions').update({
                                     'transactions_count':int(nsel),'riders_active':int(rsel)
                                 }).eq('id', row['id']).execute()
+                                # clear deep-link flags
+                                for k in ['open_edit_tx','edit_target_h','edit_target_d']:
+                                    st.session_state.pop(k, None)
                                 st.success('อัปเดตแล้ว'); load_df.clear(); rerun()
                             except Exception:
                                 st.error('อัปเดตไม่สำเร็จ')
@@ -463,16 +518,23 @@ def render_admin():
                         if st.button('ลบรายการนี้', key='del_edit_tx'):
                             try:
                                 sb.table('transactions').delete().eq('id', row['id']).execute()
+                                for k in ['open_edit_tx','edit_target_h','edit_target_d']:
+                                    st.session_state.pop(k, None)
                                 st.success('ลบแล้ว'); load_df.clear(); rerun()
                             except Exception:
                                 st.error('ลบไม่สำเร็จ')
+
+            # reset flag so expander ไม่ค้างเปิด
+            st.session_state['open_edit_tx'] = False
 
     # ---- Admin users ----
     with tabs[2]:
         st.markdown('### ผู้ดูแลระบบ')
         admins_df = load_df('admins')
-        st.dataframe(admins_df[['username']] if 'username' in admins_df.columns else pd.DataFrame(columns=['username']),
-                     use_container_width=True)
+        if not admins_df.empty and 'username' in admins_df.columns:
+            st.dataframe(admins_df[['username']], use_container_width=True)
+        else:
+            st.info('ยังไม่มีข้อมูลผู้ดูแล หรือไม่มีตาราง admins')
         with st.expander('➕ เพิ่มผู้ดูแล'):
             nu = st.text_input('Username ใหม่'); npw = st.text_input('Password', type='password')
             if st.button('เพิ่มผู้ดูแล'):
@@ -509,12 +571,14 @@ def render_admin():
     with tabs[3]:
         st.markdown('### ตั้งค่า & ข้อมูลตัวอย่าง')
         settings_df = load_df('settings')
+
         def get_setting(key, default):
             try:
                 v = settings_df.loc[settings_df['key']==key, 'value'].iloc[0]
                 return v if isinstance(v, dict) else default
             except Exception:
                 return default
+
         targets = get_setting('targets', {'daily_transactions':50,'utilization_alert_pct':90})
         line_cfg = get_setting('line_notify', {'enabled':False,'token':''})
 
@@ -541,6 +605,12 @@ def render_admin():
                 st.success('บันทึกแล้ว'); load_df.clear()
             except Exception:
                 st.warning('ยังไม่มีตาราง settings ในฐานข้อมูล')
+
+        st.markdown('#### ตาราง settings (Raw)')
+        if not settings_df.empty:
+            st.dataframe(settings_df, use_container_width=True)
+        else:
+            st.info('ยังไม่มีข้อมูลในตาราง settings')
 
         st.markdown('#### ข้อมูลตัวอย่าง')
         a,b = st.columns(2)
