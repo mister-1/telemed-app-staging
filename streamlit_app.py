@@ -1,8 +1,9 @@
-# DashBoard Telemedicine — v3.5
-# - Dropdown (popover) filters for Hospitals / SiteControl with search + Select All / Clear + Done (auto-close via rerun)
-# - Default date filter = today..today + quick Today / This month
-# - KPI cards styled, Dark/Light aware
-# - Prevent duplicate transactions (same hospital + date)
+# DashBoard Telemedicine — v3.6
+# - FIX dropdown error: avoid writing to widget state; manage our own state + rerun
+# - Dropdown (popover) filters with search + Select All / Clear + Done (auto-close)
+# - Default date filter: today..today + quick Today / This month
+# - KPI cards styled (Light/Dark)
+# - Prevent duplicate transactions (same hospital+date)
 # - Stable dashboard (sanitized defaults, plotly table)
 # - Admin: cascade delete hospital -> transactions, edit/delete tx by hospital+date
 # - Version in sidebar, screenshot full page
@@ -16,7 +17,7 @@ from typing import List
 import streamlit as st
 from supabase import create_client, Client
 
-APP_VERSION = "v3.5"
+APP_VERSION = "v3.6"
 
 # ---------------- App / Theme ----------------
 st.set_page_config(page_title="DashBoard Telemedicine", page_icon="📊", layout="wide")
@@ -137,45 +138,42 @@ TH_MONTHS = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","ม�
 def th_date(d: date) -> str:
     return f"{d.day} {TH_MONTHS[d.month-1]} {d.year+543}"
 
-# ---------- Dropdown-style multiselect (popover/expander) ----------
+# ---------- Dropdown-style multiselect (no widget-state writes) ----------
 def multiselect_dropdown(label: str, options: list, state_key: str, default_all: bool = True):
     """
-    แสดงตัวกรองแบบ dropdown (popover ถ้ามี) ที่ค้นหาได้ + ปุ่ม เลือกทั้งหมด/ล้าง + ปุ่มเสร็จสิ้น
-    จะ sanitize ค่าเดิมอัตโนมัติ และ auto-close ด้วยการ rerun หลังกดเสร็จสิ้น
+    Dropdown (popover/expander) + search + Select All / Clear / Done.
+    ไม่เขียนค่าไปยัง widget key ใด ๆ เพื่อเลี่ยง StreamlitAPIException
+    เก็บสถานะไว้ใน st.session_state[state_key] เท่านั้น แล้ว rerun หลังคลิกปุ่ม
     """
     options = options or []
-    # init & sanitize
-    if state_key not in st.session_state:
-        st.session_state[state_key] = options[:] if default_all else []
-    st.session_state[state_key] = [x for x in st.session_state[state_key] if x in options]
+    # init & sanitize current selection in our own state
+    current = st.session_state.get(state_key, options[:] if default_all else [])
+    current = [x for x in current if x in options]
+    st.session_state[state_key] = current
 
     use_pop = hasattr(st, "popover")
     container = st.popover(label) if use_pop else st.expander(label, expanded=False)
     with container:
         sel = st.multiselect(
-            " ", options=options, default=st.session_state[state_key],
-            key=f"{state_key}_multi", label_visibility="collapsed",
-            placeholder="พิมพ์เพื่อค้นหา..."
+            " ", options=options, default=current,
+            label_visibility="collapsed", placeholder="พิมพ์เพื่อค้นหา..."
         )
         c1, c2, c3 = st.columns(3)
         with c1:
-            if st.button("เลือกทั้งหมด", key=f"{state_key}_all"):
+            if st.button("เลือกทั้งหมด", key=f"{state_key}_all_btn"):
                 st.session_state[state_key] = options[:]
-                st.session_state[f"{state_key}_multi"] = options[:]
                 rerun()
         with c2:
-            if st.button("ล้างทั้งหมด", key=f"{state_key}_clear"):
+            if st.button("ล้างทั้งหมด", key=f"{state_key}_clear_btn"):
                 st.session_state[state_key] = []
-                st.session_state[f"{state_key}_multi"] = []
                 rerun()
         with c3:
-            # ปุ่มเสร็จสิ้น -> sync แล้ว rerun (popover จะปิดเองหลัง rerun)
-            if st.button("เสร็จสิ้น ✅", key=f"{state_key}_done"):
+            if st.button("เสร็จสิ้น ✅", key=f"{state_key}_done_btn"):
                 st.session_state[state_key] = sel or []
                 rerun()
 
-    # sync immediate
-    if sel is not None:
+    # sync เมื่อผู้ใช้เลือกแต่ไม่กดปุ่ม
+    if sel is not None and sel != st.session_state[state_key]:
         st.session_state[state_key] = sel
     return st.session_state[state_key]
 
