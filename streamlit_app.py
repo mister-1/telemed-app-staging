@@ -1,4 +1,8 @@
-# DashBoard Telemedicine — v3.3
+# DashBoard Telemedicine — v3.4
+# - Fix: prevent duplicate transactions (same hospital+date)
+# - Fix: sanitize multiselect defaults to avoid StreamlitAPIException
+# - Replace styled table with Plotly Table for stability
+# - Keep all v3.3 features
 
 import os, uuid, json, bcrypt, requests, random
 import pandas as pd
@@ -9,7 +13,7 @@ from typing import List
 import streamlit as st
 from supabase import create_client, Client
 
-APP_VERSION = "v3.3"
+APP_VERSION = "v3.4"
 
 # ---------------- App / Theme ----------------
 st.set_page_config(page_title="DashBoard Telemedicine", page_icon="📊", layout="wide")
@@ -153,21 +157,19 @@ def render_dashboard():
             if st.button('เดือนนี้'):
                 first = today.replace(day=1); st.session_state['date_range'] = (first, today); rerun()
 
-    # ---- Hospital multiselect (dropdown search, select all/clear) ----
+    # ---- Hospital multiselect (sanitize defaults) ----
     with f3:
         all_names = sorted(hospitals_df.get('name', pd.Series(dtype=str)).dropna().unique().tolist())
-        if 'hosp_sel' not in st.session_state: st.session_state['hosp_sel']=all_names
-        sel = st.multiselect('🏥 โรงพยาบาล', options=all_names, default=st.session_state['hosp_sel'])
-        c3,c4 = st.columns(2)
-        with c3:
-            if st.button('เลือกทั้งหมด'): st.session_state.hosp_sel=all_names; rerun()
-        with c4:
-            if st.button('ล้างทั้งหมด'): st.session_state.hosp_sel=[]; rerun()
+        prev = st.session_state.get('hosp_sel', all_names)
+        default = [x for x in prev if x in all_names]  # sanitize
+        sel = st.multiselect('🏥 โรงพยาบาล', options=all_names, default=default, key='hosp_sel_widget')
+        st.session_state['hosp_sel'] = sel  # keep latest valid selection
 
-    # ---- SiteControl multiselect ----
+    # ---- SiteControl multiselect (sanitize) ----
     with f4:
-        if 'site_filter' not in st.session_state: st.session_state['site_filter']=SITE_CONTROL_CHOICES[:]
-        st.session_state.site_filter = st.multiselect('🧭 ทีม', SITE_CONTROL_CHOICES, default=st.session_state.site_filter)
+        prev_sc = st.session_state.get('site_filter', SITE_CONTROL_CHOICES[:])
+        default_sc = [x for x in prev_sc if x in SITE_CONTROL_CHOICES]
+        st.session_state['site_filter'] = st.multiselect('🧭 ทีม', SITE_CONTROL_CHOICES, default=default_sc, key='site_filter_widget')
 
     # ---- capture whole page ----
     cap_col = st.columns([1,3,1])[0]
@@ -177,8 +179,7 @@ def render_dashboard():
             <script src="https://html2canvas.hertzen.com/dist/html2canvas.min.js"></script>
             <script>
             (async () => {
-              const el = document.body;
-              await new Promise(r=>setTimeout(r,350));
+              const el = document.body; await new Promise(r=>setTimeout(r,350));
               html2canvas(el,{useCORS:true,windowWidth:document.body.scrollWidth,
                               windowHeight:document.body.scrollHeight,scale:2})
               .then(cv=>{const a=document.createElement('a');a.download='telemed-dashboard.png';
@@ -198,8 +199,9 @@ def render_dashboard():
     else:
         df = pd.DataFrame(columns=['date','hospital_id','transactions_count','riders_active','name','site_control','riders_count'])
 
-    if st.session_state.get('site_filter'): df = df[df['site_control'].isin(st.session_state.site_filter)]
-    if st.session_state.get('hosp_sel'): df = df[df['name'].isin(st.session_state.hosp_sel)]
+    # selections
+    if st.session_state.get('site_filter'): df = df[df['site_control'].isin(st.session_state['site_filter'])]
+    if st.session_state.get('hosp_sel'): df = df[df['name'].isin(st.session_state['hosp_sel'])]
 
     # ---- KPI cards ----
     st.markdown("### 📈 ภาพรวม")
@@ -259,26 +261,40 @@ def render_dashboard():
                          xaxis_tickangle=-40, margin=dict(t=30,r=20,b=80,l=60))
         st.plotly_chart(ln, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})
 
-    # ---- Table by site ----
+    # ---- Table by site (Plotly Table for stability) ----
     st.markdown('#### ตารางจำนวน Transaction แยกตามทีมภูมิภาค')
     site_tbl = df.groupby('site_control').agg(
         Transactions=('transactions_count','sum'),
         Rider_Active=('riders_active','sum'),
         Riders_Total=('riders_count','sum')
     ).reset_index().rename(columns={'site_control':'ทีมภูมิภาค'})
-    try:
-        st.table(
-            site_tbl.style
-                .set_table_styles([{'selector':'th','props':[('background',('#0b1220' if DARK else '#EEF2FF')),
-                                                            ('color',('#E5E7EB' if DARK else '#334155')),
-                                                            ('font-weight','600')]}])
-                .bar(subset=['Transactions'], color=PALETTE[0])
-                .bar(subset=['Rider_Active'], color=PALETTE[1])
-                .bar(subset=['Riders_Total'], color=PALETTE[2])
-                .format({'Transactions':'{:,}','Rider_Active':'{:,}','Riders_Total':'{:,}'})
-        )
-    except Exception:
-        st.dataframe(site_tbl, use_container_width=True)
+    if not site_tbl.empty:
+        # format text w/ thousands
+        show_df = site_tbl.copy()
+        show_df['Transactions']  = show_df['Transactions'].map('{:,}'.format)
+        show_df['Rider_Active']  = show_df['Rider_Active'].map('{:,}'.format)
+        show_df['Riders_Total']  = show_df['Riders_Total'].map('{:,}'.format)
+
+        header_fill = '#0b1220' if DARK else '#EEF2FF'
+        header_font = '#E5E7EB' if DARK else '#334155'
+        # row colors alternating
+        rgba = [
+            'rgba(167,199,231,0.15)','rgba(248,200,220,0.15)','rgba(182,226,211,0.15)',
+            'rgba(253,226,179,0.15)','rgba(234,215,247,0.15)','rgba(205,229,240,0.15)'
+        ]
+        row_colors = [rgba[i % len(rgba)] for i in range(len(show_df))]
+        fill_matrix = [row_colors]*len(show_df.columns)
+
+        figt = go.Figure(data=[go.Table(
+            header=dict(values=list(show_df.columns), fill_color=header_fill, font=dict(color=header_font, size=12),
+                        align='left', height=30),
+            cells=dict(values=[show_df[c] for c in show_df.columns], fill_color=fill_matrix,
+                       align='left', height=28)
+        )])
+        figt.update_layout(margin=dict(l=0,r=0,t=0,b=0))
+        st.plotly_chart(figt, use_container_width=True, config={'displaylogo': False})
+    else:
+        st.info('ไม่มีข้อมูลตารางในช่วงที่เลือก')
 
 # ====================== ADMIN ======================
 def render_admin():
@@ -329,16 +345,14 @@ def render_admin():
                         st.error('บันทึกไม่สำเร็จ')
 
             with c2:
-                # ยืนยันลบอย่างชัดเจน
-                if edit_mode:
-                    confirm = st.checkbox('ยืนยันการลบโรงพยาบาลนี้และธุรกรรมทั้งหมดที่เกี่ยวข้อง', value=False)
-                    if st.button('🗑️ ยืนยันลบ', disabled=not confirm):
-                        try:
-                            sb.table('transactions').delete().eq('hospital_id', row['id']).execute()
-                            sb.table('hospitals').delete().eq('id', row['id']).execute()
-                            st.success('ลบเรียบร้อย'); load_df.clear(); rerun()
-                        except Exception:
-                            st.error('ลบไม่สำเร็จ')
+                confirm = st.checkbox('ยืนยันการลบโรงพยาบาลนี้และธุรกรรมทั้งหมดที่เกี่ยวข้อง', value=False, key='confirm_del_hosp')
+                if edit_mode and st.button('🗑️ ยืนยันลบ', disabled=not confirm):
+                    try:
+                        sb.table('transactions').delete().eq('hospital_id', row['id']).execute()
+                        sb.table('hospitals').delete().eq('id', row['id']).execute()
+                        st.success('ลบเรียบร้อย'); load_df.clear(); rerun()
+                    except Exception:
+                        st.error('ลบไม่สำเร็จ')
 
         st.markdown('#### รายชื่อโรงพยาบาล')
         cols = [c for c in ['name','province','region','site_control','system_type','service_models','riders_count'] if c in hospitals_df.columns]
@@ -352,7 +366,7 @@ def render_admin():
             st.info('ยังไม่มีโรงพยาบาล — เพิ่มก่อน')
         else:
             name2id = {r['name']:r['id'] for _,r in hospitals_df.iterrows()}
-            # เพิ่ม
+            # เพิ่ม (prevent duplicate)
             with st.expander('➕ เพิ่ม Transaction รายวัน'):
                 hname = st.selectbox('โรงพยาบาล (ค้นหาได้)', list(name2id.keys()), key='add_tx_hosp')
                 tx_date = st.date_input('วันที่', value=date.today(), key='add_tx_date')
@@ -361,6 +375,11 @@ def render_admin():
                 if st.button('บันทึก Transaction', key='add_tx_btn'):
                     hid = name2id[hname]
                     try:
+                        # ป้องกันข้อมูลซ้ำ: hospital_id + date
+                        existed = sb.table('transactions').select('id').eq('hospital_id', hid).eq('date', tx_date.isoformat()).limit(1).execute().data
+                        if existed:
+                            st.error('มีรายการของโรงพยาบาลนี้ในวันที่นี้อยู่แล้ว — โปรดแก้ไขรายการเดิมแทน')
+                            st.stop()
                         rc = int(hospitals_df.loc[hospitals_df['id']==hid,'riders_count'].iloc[0])
                         if riders_active > rc: st.error('Rider Active มากกว่า Capacity'); st.stop()
                         sb.table('transactions').insert({
