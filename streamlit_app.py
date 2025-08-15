@@ -1,9 +1,7 @@
-# DashBoard Telemedicine — v4.0
-# - Hospital Overview: sortable by name/transactions (asc/desc)
-# - Daily Trend: modern curved (spline) line, cleaned title
-# - Site table: bold/distinct header
-# - New filter: Region (ภูมิภาค) with same UX as SiteControl
-# - Admin/Transactions: Edit expander moved under Add; cancel collapses Edit; duplicate -> collapse Add & open Edit
+# DashBoard Telemedicine — v4.4
+# - NEW: ตารางสรุปตามประเภทโรงพยาบาล (Hospitals, Tx, Rider Active, Riders Total, Avg Tx/Hosp)
+# - NEW: ตัวเลือกเรียงลำดับสำหรับกราฟ "ประเภทโรงพยาบาล" (ตามจำนวน Transaction / จำนวนโรงพยาบาล)
+# - คงทุกฟีเจอร์จาก v4.3 (Master Data, UI patches, Dark/Light, etc.)
 
 import os, uuid, json, bcrypt, requests, random
 import pandas as pd
@@ -14,7 +12,7 @@ from typing import List
 import streamlit as st
 from supabase import create_client, Client
 
-APP_VERSION = "v4.0"
+APP_VERSION = "v4.4"
 
 # ---------------- App / Theme ----------------
 st.set_page_config(page_title="DashBoard Telemedicine", page_icon="📊", layout="wide")
@@ -26,51 +24,34 @@ PALETTE_DARK   = ["#60A5FA","#F472B6","#34D399","#FBBF24","#C084FC","#67E8F9",
 
 SITE_CONTROL_CHOICES = ['ทีมใต้', 'ทีมเหนือ', 'ทีมอีสาน']
 SYSTEM_CHOICES = ['HOSxpV4', 'HOSxpV3', 'WebPortal']
-SERVICE_MODEL_CHOICES = ['Rider', 'App', 'Station to Station']
+DEFAULT_SERVICE_MODELS = ['Rider', 'App', 'Station to Station']
+DEFAULT_HOSPITAL_TYPES = ['รพ.ศูนย์/รพ.ทั่วไป','รพ.ชุมชน','สถาบัน/เฉพาะทาง','เอกชน/คลินิก']
 
-# --- แทนที่ตัวแปร TH_PROVINCES เดิมทั้งบล็อคด้วยอันนี้ ---
+# --- 77 จังหวัด + ภูมิภาค ---
 TH_PROVINCES = {
     # ภาคกลาง
-    'กรุงเทพมหานคร': 'ภาคกลาง', 'นนทบุรี': 'ภาคกลาง', 'ปทุมธานี': 'ภาคกลาง',
-    'พระนครศรีอยุธยา': 'ภาคกลาง', 'อ่างทอง': 'ภาคกลาง', 'ลพบุรี': 'ภาคกลาง',
-    'สิงห์บุรี': 'ภาคกลาง', 'ชัยนาท': 'ภาคกลาง', 'สระบุรี': 'ภาคกลาง',
-    'นครปฐม': 'ภาคกลาง', 'สมุทรสาคร': 'ภาคกลาง', 'สมุทรสงคราม': 'ภาคกลาง',
-    'สุพรรณบุรี': 'ภาคกลาง', 'สมุทรปราการ': 'ภาคกลาง',
-
+    'กรุงเทพมหานคร': 'ภาคกลาง','นนทบุรี': 'ภาคกลาง','ปทุมธานี': 'ภาคกลาง','พระนครศรีอยุธยา': 'ภาคกลาง',
+    'อ่างทอง': 'ภาคกลาง','ลพบุรี': 'ภาคกลาง','สิงห์บุรี': 'ภาคกลาง','ชัยนาท': 'ภาคกลาง','สระบุรี': 'ภาคกลาง',
+    'นครปฐม': 'ภาคกลาง','สมุทรสาคร': 'ภาคกลาง','สมุทรสงคราม': 'ภาคกลาง','สุพรรณบุรี': 'ภาคกลาง','สมุทรปราการ': 'ภาคกลาง',
     # ภาคตะวันออก
-    'ชลบุรี': 'ภาคตะวันออก', 'ระยอง': 'ภาคตะวันออก', 'จันทบุรี': 'ภาคตะวันออก',
-    'ตราด': 'ภาคตะวันออก', 'ฉะเชิงเทรา': 'ภาคตะวันออก', 'ปราจีนบุรี': 'ภาคตะวันออก',
-    'สระแก้ว': 'ภาคตะวันออก',
-
+    'ชลบุรี': 'ภาคตะวันออก','ระยอง': 'ภาคตะวันออก','จันทบุรี': 'ภาคตะวันออก','ตราด': 'ภาคตะวันออก',
+    'ฉะเชิงเทรา': 'ภาคตะวันออก','ปราจีนบุรี': 'ภาคตะวันออก','สระแก้ว': 'ภาคตะวันออก',
     # ภาคตะวันตก
-    'กาญจนบุรี': 'ภาคตะวันตก', 'ตาก': 'ภาคตะวันตก', 'ราชบุรี': 'ภาคตะวันตก',
-    'เพชรบุรี': 'ภาคตะวันตก', 'ประจวบคีรีขันธ์': 'ภาคตะวันตก',
-
+    'กาญจนบุรี': 'ภาคตะวันตก','ตาก': 'ภาคตะวันตก','ราชบุรี': 'ภาคตะวันตก','เพชรบุรี': 'ภาคตะวันตก','ประจวบคีรีขันธ์': 'ภาคตะวันตก',
     # ภาคเหนือ
-    'เชียงใหม่': 'ภาคเหนือ', 'เชียงราย': 'ภาคเหนือ', 'ลำปาง': 'ภาคเหนือ',
-    'ลำพูน': 'ภาคเหนือ', 'พะเยา': 'ภาคเหนือ', 'แพร่': 'ภาคเหนือ',
-    'น่าน': 'ภาคเหนือ', 'แม่ฮ่องสอน': 'ภาคเหนือ', 'อุตรดิตถ์': 'ภาคเหนือ',
-    'สุโขทัย': 'ภาคเหนือ', 'พิษณุโลก': 'ภาคเหนือ', 'พิจิตร': 'ภาคเหนือ',
-    'กำแพงเพชร': 'ภาคเหนือ', 'เพชรบูรณ์': 'ภาคเหนือ',
-    'นครสวรรค์': 'ภาคเหนือ', 'อุทัยธานี': 'ภาคเหนือ',
-
-    # ภาคตะวันออกเฉียงเหนือ (อีสาน)
-    'เลย': 'ภาคอีสาน', 'หนองคาย': 'ภาคอีสาน', 'บึงกาฬ': 'ภาคอีสาน',
-    'หนองบัวลำภู': 'ภาคอีสาน', 'อุดรธานี': 'ภาคอีสาน', 'สกลนคร': 'ภาคอีสาน',
-    'นครพนม': 'ภาคอีสาน', 'กาฬสินธุ์': 'ภาคอีสาน', 'มุกดาหาร': 'ภาคอีสาน',
-    'ขอนแก่น': 'ภาคอีสาน', 'ชัยภูมิ': 'ภาคอีสาน', 'นครราชสีมา': 'ภาคอีสาน',
-    'บุรีรัมย์': 'ภาคอีสาน', 'สุรินทร์': 'ภาคอีสาน', 'ศรีสะเกษ': 'ภาคอีสาน',
-    'อุบลราชธานี': 'ภาคอีสาน', 'ยโสธร': 'ภาคอีสาน', 'อำนาจเจริญ': 'ภาคอีสาน',
-    'มหาสารคาม': 'ภาคอีสาน', 'ร้อยเอ็ด': 'ภาคอีสาน',
-
+    'เชียงใหม่': 'ภาคเหนือ','เชียงราย': 'ภาคเหนือ','ลำปาง': 'ภาคเหนือ','ลำพูน': 'ภาคเหนือ','พะเยา': 'ภาคเหนือ','แพร่': 'ภาคเหนือ',
+    'น่าน': 'ภาคเหนือ','แม่ฮ่องสอน': 'ภาคเหนือ','อุตรดิตถ์': 'ภาคเหนือ','สุโขทัย': 'ภาคเหนือ','พิษณุโลก': 'ภาคเหนือ',
+    'พิจิตร': 'ภาคเหนือ','กำแพงเพชร': 'ภาคเหนือ','เพชรบูรณ์': 'ภาคเหนือ','นครสวรรค์': 'ภาคเหนือ','อุทัยธานี': 'ภาคเหนือ',
+    # ภาคอีสาน
+    'เลย': 'ภาคอีสาน','หนองคาย': 'ภาคอีสาน','บึงกาฬ': 'ภาคอีสาน','หนองบัวลำภู': 'ภาคอีสาน','อุดรธานี': 'ภาคอีสาน',
+    'สกลนคร': 'ภาคอีสาน','นครพนม': 'ภาคอีสาน','กาฬสินธุ์': 'ภาคอีสาน','มุกดาหาร': 'ภาคอีสาน','ขอนแก่น': 'ภาคอีสาน',
+    'ชัยภูมิ': 'ภาคอีสาน','นครราชสีมา': 'ภาคอีสาน','บุรีรัมย์': 'ภาคอีสาน','สุรินทร์': 'ภาคอีสาน','ศรีสะเกษ': 'ภาคอีสาน',
+    'อุบลราชธานี': 'ภาคอีสาน','ยโสธร': 'ภาคอีสาน','อำนาจเจริญ': 'ภาคอีสาน','มหาสารคาม': 'ภาคอีสาน','ร้อยเอ็ด': 'ภาคอีสาน',
     # ภาคใต้
-    'ชุมพร': 'ภาคใต้', 'ระนอง': 'ภาคใต้', 'สุราษฎร์ธานี': 'ภาคใต้',
-    'พังงา': 'ภาคใต้', 'ภูเก็ต': 'ภาคใต้', 'กระบี่': 'ภาคใต้',
-    'ตรัง': 'ภาคใต้', 'พัทลุง': 'ภาคใต้', 'นครศรีธรรมราช': 'ภาคใต้',
-    'สงขลา': 'ภาคใต้', 'สตูล': 'ภาคใต้', 'ปัตตานี': 'ภาคใต้',
-    'ยะลา': 'ภาคใต้', 'นราธิวาส': 'ภาคใต้',
+    'ชุมพร': 'ภาคใต้','ระนอง': 'ภาคใต้','สุราษฎร์ธานี': 'ภาคใต้','พังงา': 'ภาคใต้','ภูเก็ต': 'ภาคใต้','กระบี่': 'ภาคใต้',
+    'ตรัง': 'ภาคใต้','พัทลุง': 'ภาคใต้','นครศรีธรรมราช': 'ภาคใต้','สงขลา': 'ภาคใต้','สตูล': 'ภาคใต้','ปัตตานี': 'ภาคใต้',
+    'ยะลา': 'ภาคใต้','นราธิวาส': 'ภาคใต้',
 }
-
 
 # ---------------- Supabase ----------------
 SUPABASE_URL = os.getenv('SUPABASE_URL', '')
@@ -114,6 +95,34 @@ def ensure_default_admin():
         pass
 ensure_default_admin()
 
+def get_master_names(table: str, fallback: List[str]) -> List[str]:
+    try:
+        df = pd.DataFrame(sb.table(table).select('name').order('name', desc=False).execute().data)
+        lst = df['name'].dropna().tolist() if not df.empty and 'name' in df.columns else []
+        return lst if lst else fallback
+    except Exception:
+        return fallback
+
+def upsert_master(table: str, name: str):
+    try:
+        ex = sb.table(table).select('id').eq('name', name).limit(1).execute().data
+        if ex: return
+        sb.table(table).insert({'id':str(uuid.uuid4()), 'name': name}).execute()
+    except Exception:
+        st.warning(f'⚠️ ยังไม่มีตาราง {table} หรือเพิ่มไม่สำเร็จ')
+
+def rename_master(table: str, old: str, new: str):
+    try:
+        sb.table(table).update({'name': new}).eq('name', old).execute()
+    except Exception:
+        st.warning(f'⚠️ เปลี่ยนชื่อใน {table} ไม่สำเร็จ')
+
+def delete_master(table: str, name: str):
+    try:
+        sb.table(table).delete().eq('name', name).execute()
+    except Exception:
+        st.warning(f'⚠️ ลบใน {table} ไม่สำเร็จ')
+
 # UI State
 if 'ui' not in st.session_state: st.session_state['ui']={'dark': False}
 with st.sidebar:
@@ -143,6 +152,20 @@ st.markdown(f"""
   .section-title {{ font-weight:600; margin-bottom: .25rem; }}
 </style>
 """, unsafe_allow_html=True)
+
+def apply_ui_patches():
+    # ซ่อนข้อความ icon หลุด เช่น 'keyboard_double_arrow_right' / 'keboard'
+    st.components.v1.html("""
+    <script>
+      setTimeout(()=>{
+        const hideTexts = ['keyboard_double_arrow_right','keboard','keyboard'];
+        document.querySelectorAll('button,div,span,label').forEach(el=>{
+          const t=(el.innerText||'').trim();
+          if(hideTexts.includes(t)){ el.style.display='none'; }
+        });
+      }, 0);
+    </script>
+    """, height=0)
 
 # ---------------- Auth ----------------
 if 'auth' not in st.session_state: st.session_state['auth']={'ok':False,'user':None}
@@ -174,7 +197,7 @@ TH_MONTHS = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","ม�
 def th_date(d: date) -> str:
     return f"{d.day} {TH_MONTHS[d.month-1]} {d.year+543}"
 
-# ---------- Dropdown-style multiselect (no widget-state writes) ----------
+# ---------- Dropdown-style multiselect ----------
 def multiselect_dropdown(label: str, options: list, state_key: str, default_all: bool = True):
     options = options or []
     current = st.session_state.get(state_key, options[:] if default_all else [])
@@ -211,6 +234,7 @@ def render_chart_placeholder(title:str):
     st.plotly_chart(fig, use_container_width=True, config={'displaylogo': False})
 
 def render_dashboard():
+    apply_ui_patches()
     st.markdown("# DashBoard Telemedicine")
 
     hospitals_df = load_df('hospitals')
@@ -243,10 +267,11 @@ def render_dashboard():
             st.session_state['hosp_sel'] = []
             st.session_state['site_filter'] = []
             st.session_state['region_filter'] = []
+            st.session_state['type_filter'] = []
             rerun()
 
-    # Row 2: dropdowns (โรงพยาบาล / ทีม / ภูมิภาค)
-    c_row2_a, c_row2_b, c_row2_c = st.columns([1.6,1.2,1.2])
+    # Row 2: dropdowns (โรงพยาบาล / ทีม / ภูมิภาค / ประเภท)
+    c_row2_a, c_row2_b, c_row2_c, c_row2_d = st.columns([1.4,1.1,1.1,1.2])
     with c_row2_a:
         all_names = sorted(hospitals_df['name'].dropna().unique().tolist()) if 'name' in hospitals_df.columns else []
         selected_hospitals = multiselect_dropdown("🏥 โรงพยาบาล", all_names, "hosp_sel", default_all=True)
@@ -255,6 +280,10 @@ def render_dashboard():
     with c_row2_c:
         regions = sorted(hospitals_df['region'].dropna().unique().tolist()) if 'region' in hospitals_df.columns else []
         selected_regions = multiselect_dropdown("🗺️ ภูมิภาค", regions, "region_filter", default_all=True)
+    with c_row2_d:
+        types = sorted(hospitals_df['hospital_type'].dropna().unique().tolist()) if 'hospital_type' in hospitals_df.columns \
+                else get_master_names('hospital_types', DEFAULT_HOSPITAL_TYPES)
+        selected_types = multiselect_dropdown("🏷️ ประเภทโรงพยาบาล", types, "type_filter", default_all=True)
 
     # ---- Capture whole page ----
     cap_col = st.columns([1,3,1])[0]
@@ -282,11 +311,13 @@ def render_dashboard():
     if not tx_df.empty and not hospitals_df.empty:
         df = tx_df.merge(hospitals_df, left_on='hospital_id', right_on='id', how='left', suffixes=('','_h'))
     else:
-        df = pd.DataFrame(columns=['date','hospital_id','transactions_count','riders_active','name','site_control','region','riders_count'])
+        df = pd.DataFrame(columns=['date','hospital_id','transactions_count','riders_active',
+                                   'name','site_control','region','riders_count','hospital_type'])
 
-    if st.session_state.get('site_filter'): df = df[df['site_control'].isin(st.session_state['site_filter'])]
-    if st.session_state.get('hosp_sel'): df = df[df['name'].isin(st.session_state['hosp_sel'])]
+    if st.session_state.get('site_filter'):   df = df[df['site_control'].isin(st.session_state['site_filter'])]
+    if st.session_state.get('hosp_sel'):      df = df[df['name'].isin(st.session_state['hosp_sel'])]
     if st.session_state.get('region_filter'): df = df[df['region'].isin(st.session_state['region_filter'])]
+    if st.session_state.get('type_filter'):   df = df[df['hospital_type'].isin(st.session_state['type_filter'])]
 
     # ---- KPI cards ----
     st.markdown("### 📈 ภาพรวม")
@@ -322,6 +353,106 @@ def render_dashboard():
             render_chart_placeholder('#### จำนวน Transaction ตามทีมภูมิภาค (กราฟวงกลม)')
     else:
         render_chart_placeholder('#### จำนวน Transaction ตามทีมภูมิภาค (กราฟวงกลม)')
+
+    # ==== NEW: Charts & Table by Hospital Type ====
+    st.markdown('### 🏷️ ประเภทโรงพยาบาล (สรุป)')
+    if not df.empty and 'hospital_type' in df.columns and df['hospital_type'].notna().any():
+        # สรุปตามประเภท
+        gtype_sum = df.groupby('hospital_type', dropna=True).agg(
+            transactions_count=('transactions_count','sum'),
+            riders_active=('riders_active','sum'),
+            riders_total=('riders_count','sum'),
+            hospitals_count=('hospital_id','nunique')
+        ).reset_index()
+
+        # Avg Tx / Hosp (แสดงเป็นทศนิยม 1 ตำแหน่ง)
+        gtype_sum['avg_tx_per_hosp'] = gtype_sum['transactions_count'] / gtype_sum['hospitals_count']
+        gtype_sum = gtype_sum.sort_values('transactions_count', ascending=False)
+
+        # แถวควบคุมการเรียงลำดับสำหรับกราฟแท่งประเภท
+        ui1, ui2, _ = st.columns([1.3, 1.1, 2.6])
+        with ui1:
+            sort_metric = st.selectbox('เรียงกราฟตาม', ['จำนวน Transaction','จำนวนโรงพยาบาล'], index=0, key='sort_metric_type')
+        with ui2:
+            sort_dir = st.selectbox('ทิศทาง', ['มาก→น้อย','น้อย→มาก'], index=0, key='sort_dir_type')
+
+        # กำหนด DataFrame สำหรับกราฟแท่ง (ตามคีย์เรียง)
+        if sort_metric == 'จำนวนโรงพยาบาล':
+            gtype_for_bar = gtype_sum.sort_values('hospitals_count', ascending=(sort_dir=='น้อย→มาก'))
+        else:
+            gtype_for_bar = gtype_sum.sort_values('transactions_count', ascending=(sort_dir=='น้อย→มาก'))
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown('#### สัดส่วนตามประเภทโรงพยาบาล (กราฟวงกลม)')
+            pie_t = px.pie(gtype_sum, names='hospital_type', values='transactions_count',
+                           color='hospital_type', color_discrete_sequence=PALETTE, hole=0.55)
+            pie_t.update_traces(textposition='outside',
+                                texttemplate='<b>%{label}</b><br>%{value:,} (%{percent:.1%})',
+                                marker=dict(line=dict(color=('#fff' if not DARK else '#111'), width=2)),
+                                pull=[0.02]*len(gtype_sum))
+            pie_t.update_layout(annotations=[dict(text=f"{int(gtype_sum.transactions_count.sum()):,}<br>รวม", x=0.5, y=0.5, showarrow=False, font=dict(size=16))])
+            st.plotly_chart(pie_t, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})
+
+        with c2:
+            st.markdown('#### ภาพรวมตามประเภทโรงพยาบาล')
+            bar_t = px.bar(
+                gtype_for_bar, y='hospital_type', x='transactions_count', orientation='h',
+                text='transactions_count',
+                color='hospital_type', color_discrete_sequence=PALETTE
+            )
+            bar_t.update_traces(textposition='outside')
+            bar_t.update_layout(showlegend=False, margin=dict(l=160,r=40,t=30,b=30),
+                                yaxis_title='ประเภท', xaxis_title='Transactions',
+                                height=max(420, 50*len(gtype_for_bar)+180))
+            st.plotly_chart(bar_t, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})
+
+        # ---- ตารางสรุปตามประเภทโรงพยาบาล ----
+        st.markdown('#### ตารางสรุปตามประเภทโรงพยาบาล')
+        show_tbl = gtype_sum.rename(columns={
+            'hospital_type': 'ประเภท',
+            'hospitals_count': 'Hospitals',
+            'transactions_count': 'Transactions',
+            'riders_active': 'Rider Active',
+            'riders_total': 'Riders Total',
+            'avg_tx_per_hosp': 'Avg Tx/รพ.'
+        }).copy()
+
+        # จัดรูปแบบตัวเลข
+        show_tbl['Hospitals'] = show_tbl['Hospitals'].map('{:,}'.format)
+        show_tbl['Transactions'] = show_tbl['Transactions'].map('{:,}'.format)
+        show_tbl['Rider Active'] = show_tbl['Rider Active'].map('{:,}'.format)
+        show_tbl['Riders Total'] = show_tbl['Riders Total'].map('{:,}'.format)
+        show_tbl['Avg Tx/รพ.'] = show_tbl['Avg Tx/รพ.'].map(lambda x: f"{x:,.1f}")
+
+        header_fill = '#111827' if DARK else '#E6EFFF'
+        header_font = '#E5E7EB' if DARK else '#1F2937'
+        header_line = '#374151' if DARK else '#BFD2FF'
+        rgba = [
+            'rgba(167,199,231,0.15)','rgba(248,200,220,0.15)','rgba(182,226,211,0.15)',
+            'rgba(253,226,179,0.15)','rgba(234,215,247,0.15)','rgba(205,229,240,0.15)'
+        ]
+        row_colors = [rgba[i % len(rgba)] for i in range(len(show_tbl))]
+        fill_matrix = [row_colors]*len(show_tbl.columns)
+
+        figt2 = go.Figure(data=[go.Table(
+            header=dict(
+                values=[f"<b>{c}</b>" for c in show_tbl.columns],
+                fill_color=header_fill,
+                font=dict(color=header_font, size=13),
+                align='left', height=34,
+                line_color=header_line, line_width=1.2
+            ),
+            cells=dict(
+                values=[show_tbl[c] for c in show_tbl.columns],
+                fill_color=fill_matrix,
+                align='left', height=28
+            )
+        )])
+        figt2.update_layout(margin=dict(l=0,r=0,t=0,b=0))
+        st.plotly_chart(figt2, use_container_width=True, config={'displaylogo': False})
+    else:
+        render_chart_placeholder('#### สัดส่วน/ภาพรวมตามประเภทโรงพยาบาล')
 
     # ---- Hospital Overview (sortable) ----
     if not df.empty:
@@ -400,7 +531,7 @@ def render_dashboard():
             show_df['Rider_Active']  = show_df['Rider_Active'].map('{:,}'.format)
             show_df['Riders_Total']  = show_df['Riders_Total'].map('{:,}'.format)
 
-            header_fill = '#111827' if DARK else '#E6EFFF'   # more distinct
+            header_fill = '#111827' if DARK else '#E6EFFF'
             header_font = '#E5E7EB' if DARK else '#1F2937'
             header_line = '#374151' if DARK else '#BFD2FF'
             rgba = [
@@ -431,19 +562,24 @@ def render_dashboard():
     else:
         st.info('ไม่มีข้อมูลตารางในช่วงที่เลือก')
 
-# ====================== ADMIN ======================
+# ====================== ADMIN (เหมือน v4.3) ======================
 def render_admin():
+    apply_ui_patches()
     if not st.session_state.auth['ok']:
         st.warning('กรุณาเข้าสู่ระบบทาง Sidebar ก่อน'); return
 
     st.markdown("# DashBoard Telemedicine")
     st.markdown("## 🛠️ หน้าการจัดการ (Admin)")
-    tabs = st.tabs(['จัดการโรงพยาบาล','จัดการ Transaction','จัดการผู้ดูแล','ตั้งค่า & ข้อมูลตัวอย่าง'])
+    tabs = st.tabs(['จัดการโรงพยาบาล','จัดการ Transaction','ข้อมูลหลัก','จัดการผู้ดูแล','ตั้งค่า & ข้อมูลตัวอย่าง'])
 
     # ---- Hospitals ----
     with tabs[0]:
         hospitals_df = load_df('hospitals')
         st.markdown('### โรงพยาบาล')
+
+        type_choices = get_master_names('hospital_types', DEFAULT_HOSPITAL_TYPES)
+        model_choices = get_master_names('service_models_master', DEFAULT_SERVICE_MODELS)
+
         with st.expander('➕ เพิ่ม/แก้ไข โรงพยาบาล'):
             edit_mode = st.checkbox('แก้ไขรายการที่มีอยู่', value=False)
             if edit_mode and not hospitals_df.empty:
@@ -456,12 +592,18 @@ def render_admin():
             provs = list(TH_PROVINCES.keys()); pidx = provs.index(row.get('province')) if row.get('province') in provs else 0
             province = st.selectbox('จังหวัด', provs, index=pidx)
             region = TH_PROVINCES.get(province, 'ภาคกลาง'); st.caption(f'ภูมิภาค: **{region}**')
+
             site = st.selectbox('SiteControl (ทีม)', SITE_CONTROL_CHOICES,
                                 index=SITE_CONTROL_CHOICES.index(row.get('site_control')) if row.get('site_control') in SITE_CONTROL_CHOICES else 0)
             system = st.selectbox('ระบบที่ใช้', SYSTEM_CHOICES,
                                   index=SYSTEM_CHOICES.index(row.get('system_type')) if row.get('system_type') in SYSTEM_CHOICES else 0)
-            models = st.multiselect('โมเดลบริการ', SERVICE_MODEL_CHOICES,
-                                    default=[m for m in (row.get('service_models') or []) if m in SERVICE_MODEL_CHOICES])
+
+            ht_default = row.get('hospital_type') if row.get('hospital_type') in type_choices else type_choices[0]
+            hospital_type = st.selectbox('ประเภทโรงพยาบาล', type_choices, index=type_choices.index(ht_default) if ht_default in type_choices else 0)
+
+            default_models = [m for m in (row.get('service_models') or []) if m in model_choices]
+            models = st.multiselect('โมเดลบริการ', model_choices, default=default_models)
+
             riders_count = st.number_input('จำนวน Rider (Capacity)', min_value=0, step=1, value=int(row.get('riders_count',0)))
 
             c1,c2 = st.columns(2)
@@ -470,14 +612,25 @@ def render_admin():
                     if not name.strip(): st.error('กรอกชื่อโรงพยาบาล'); st.stop()
                     payload = {'id':row.get('id',str(uuid.uuid4())),
                                'name':name.strip(),'province':province,'region':region,
-                               'site_control':site,'system_type':system,'service_models':models,
+                               'site_control':site,'system_type':system,
+                               'hospital_type':hospital_type,
+                               'service_models':models,
                                'riders_count':int(riders_count)}
                     try:
                         if edit_mode: sb.table('hospitals').update(payload).eq('id', row['id']).execute()
                         else: sb.table('hospitals').insert(payload).execute()
                         st.success('บันทึกเรียบร้อย'); load_df.clear(); rerun()
                     except Exception:
-                        st.error('บันทึกไม่สำเร็จ')
+                        st.warning('⚠️ อาจยังไม่มีคอลัมน์ hospital_type หรือ service_models ในตาราง hospitals')
+                        try:
+                            payload_fallback = dict(payload)
+                            payload_fallback.pop('hospital_type', None)
+                            payload_fallback.pop('service_models', None)
+                            if edit_mode: sb.table('hospitals').update(payload_fallback).eq('id', row['id']).execute()
+                            else: sb.table('hospitals').insert(payload_fallback).execute()
+                            st.success('บันทึกส่วนที่ระบบรองรับแล้ว'); load_df.clear(); rerun()
+                        except Exception:
+                            st.error('บันทึกไม่สำเร็จ')
 
             with c2:
                 confirm = st.checkbox('ยืนยันการลบโรงพยาบาลนี้และธุรกรรมทั้งหมดที่เกี่ยวข้อง', value=False, key='confirm_del_hosp')
@@ -490,8 +643,9 @@ def render_admin():
                         st.error('ลบไม่สำเร็จ')
 
         st.markdown('#### รายชื่อโรงพยาบาล')
-        cols = [c for c in ['name','province','region','site_control','system_type','service_models','riders_count'] if c in hospitals_df.columns]
-        st.dataframe(hospitals_df[cols] if not hospitals_df.empty else pd.DataFrame(columns=cols), use_container_width=True)
+        cols = [c for c in ['name','province','region','site_control','system_type','hospital_type','service_models','riders_count'] if c in hospitals_df.columns]
+        view_df = hospitals_df[cols] if (not hospitals_df.empty and cols) else pd.DataFrame(columns=['name','province','region','site_control','system_type','hospital_type','service_models','riders_count'])
+        st.dataframe(view_df, use_container_width=True)
 
     # ---- Transactions ----
     with tabs[1]:
@@ -502,11 +656,9 @@ def render_admin():
         else:
             name2id = {r['name']:r['id'] for _,r in hospitals_df.iterrows()}
 
-            # init expander states
             if 'open_add_tx' not in st.session_state: st.session_state['open_add_tx'] = True
             if 'open_edit_tx' not in st.session_state: st.session_state['open_edit_tx'] = False
 
-            # เพิ่ม (prevent duplicate + UX)
             with st.expander('➕ เพิ่ม Transaction รายวัน', expanded=st.session_state.get('open_add_tx', True)):
                 hname = st.selectbox('โรงพยาบาล (ค้นหาได้)', list(name2id.keys()), key='add_tx_hosp')
                 tx_date = st.date_input('วันที่', value=date.today(), key='add_tx_date')
@@ -526,15 +678,16 @@ def render_admin():
                                         st.session_state['edit_target_h'] = hname
                                         st.session_state['edit_target_d'] = tx_date
                                         st.session_state['force_edit_reset'] = True
-                                        st.session_state['open_add_tx'] = False   # collapse Add
-                                        st.session_state['open_edit_tx'] = True   # open Edit
+                                        st.session_state['open_add_tx'] = False
+                                        st.session_state['open_edit_tx'] = True
                                         rerun()
                                 with g2:
                                     if st.button('ยกเลิก', key='cancel_dup'):
                                         st.session_state['open_add_tx'] = False
                                         rerun()
                                 st.stop()
-                            rc = int(hospitals_df.loc[hospitals_df['id']==hid,'riders_count'].iloc[0])
+                            rc_series = hospitals_df.loc[hospitals_df['id']==hid,'riders_count']
+                            rc = int(rc_series.iloc[0]) if not rc_series.empty else 0
                             if riders_active > rc:
                                 st.error('Rider Active มากกว่า Capacity'); st.stop()
                             sb.table('transactions').insert({
@@ -549,7 +702,7 @@ def render_admin():
                         st.session_state['open_add_tx'] = False
                         rerun()
 
-            # ===== Move Edit just under Add =====
+            # Edit under Add
             raw_tx = load_df('transactions')
             default_h = st.session_state.get('edit_target_h')
             default_d = st.session_state.get('edit_target_d', date.today())
@@ -558,7 +711,6 @@ def render_admin():
             except Exception:
                 idx_default_h = 0
 
-            # force reset widget keys when deep-linked from duplicate
             if st.session_state.get('open_edit_tx', False) and st.session_state.get('force_edit_reset', False):
                 for k in ['edit_pick_h','edit_pick_d']:
                     if k in st.session_state: st.session_state.pop(k)
@@ -568,7 +720,6 @@ def render_admin():
                 h_edit = st.selectbox('โรงพยาบาล', list(name2id.keys()), index=idx_default_h, key='edit_pick_h')
                 d_edit = st.date_input('วันที่', value=default_d, key='edit_pick_d')
 
-                # Cancel button collapses this expander
                 if st.button('ยกเลิกการแก้ไข'):
                     for k in ['open_edit_tx','edit_target_h','edit_target_d','force_edit_reset']:
                         st.session_state.pop(k, None)
@@ -607,7 +758,7 @@ def render_admin():
                                 except Exception:
                                     st.error('ลบไม่สำเร็จ')
 
-            # ===== Table view (below) =====
+            # View table
             st.markdown('#### รายการ Transaction (มุมมอง)')
             if raw_tx.empty:
                 st.info('ยังไม่มีข้อมูล')
@@ -616,11 +767,65 @@ def render_admin():
                 tx_view = raw_tx.merge(hospitals_df[['id','name']], left_on='hospital_id', right_on='id', how='left')
                 tx_view['วันที่'] = tx_view['date'].apply(th_date)
                 show = safe_cols(tx_view, ['วันที่','name','transactions_count','riders_active'])
-                st.dataframe(tx_view[show].rename(columns={'name':'โรงพยาบาล','transactions_count':'Transactions','riders_active':'Rider Active'}),
-                             use_container_width=True)
+                st.dataframe(
+                    tx_view[show].rename(columns={'name':'โรงพยาบาล','transactions_count':'Transactions','riders_active':'Rider Active'}),
+                    use_container_width=True
+                )
+
+    # ---- Master Data ----
+    with tabs[2]:
+        st.markdown('### ข้อมูลหลัก (Master Data)')
+
+        st.markdown('#### ประเภทโรงพยาบาล')
+        types_df = load_df('hospital_types')
+        show_types = types_df['name'] if ('name' in types_df.columns and not types_df.empty) else pd.Series(DEFAULT_HOSPITAL_TYPES, name='name')
+        st.dataframe(pd.DataFrame({'name': show_types}), use_container_width=True)
+        c1,c2,c3 = st.columns(3)
+        with c1:
+            new_t = st.text_input('เพิ่มประเภท (เช่น รพช. ขนาด S)')
+            if st.button('เพิ่มประเภท'):
+                if new_t.strip():
+                    upsert_master('hospital_types', new_t.strip()); load_df.clear(); rerun()
+        with c2:
+            if not show_types.empty:
+                old_t = st.selectbox('เปลี่ยนชื่อ (เลือก)', show_types.tolist())
+                new_name = st.text_input('ชื่อใหม่')
+                if st.button('บันทึกชื่อใหม่'):
+                    if new_name.strip():
+                        rename_master('hospital_types', old_t, new_name.strip()); load_df.clear(); rerun()
+        with c3:
+            if not show_types.empty:
+                del_t = st.selectbox('ลบประเภท (เลือก)', show_types.tolist(), key='del_type_sel')
+                if st.button('ลบประเภทนี้'):
+                    delete_master('hospital_types', del_t); load_df.clear(); rerun()
+
+        st.divider()
+
+        st.markdown('#### โมเดลบริการ')
+        sm_df = load_df('service_models_master')
+        show_sm = sm_df['name'] if ('name' in sm_df.columns and not sm_df.empty) else pd.Series(DEFAULT_SERVICE_MODELS, name='name')
+        st.dataframe(pd.DataFrame({'name': show_sm}), use_container_width=True)
+        s1,s2,s3 = st.columns(3)
+        with s1:
+            new_m = st.text_input('เพิ่มโมเดลบริการ (เช่น Rider Hub)')
+            if st.button('เพิ่มโมเดล'):
+                if new_m.strip():
+                    upsert_master('service_models_master', new_m.strip()); load_df.clear(); rerun()
+        with s2:
+            if not show_sm.empty:
+                old_m = st.selectbox('เปลี่ยนชื่อโมเดล (เลือก)', show_sm.tolist())
+                new_m_name = st.text_input('ชื่อโมเดลใหม่')
+                if st.button('บันทึกชื่อโมเดลใหม่'):
+                    if new_m_name.strip():
+                        rename_master('service_models_master', old_m, new_m_name.strip()); load_df.clear(); rerun()
+        with s3:
+            if not show_sm.empty:
+                del_m = st.selectbox('ลบโมเดล (เลือก)', show_sm.tolist(), key='del_model_sel')
+                if st.button('ลบโมเดลนี้'):
+                    delete_master('service_models_master', del_m); load_df.clear(); rerun()
 
     # ---- Admin users ----
-    with tabs[2]:
+    with tabs[3]:
         st.markdown('### ผู้ดูแลระบบ')
         admins_df = load_df('admins')
         if not admins_df.empty and 'username' in admins_df.columns:
@@ -660,7 +865,7 @@ def render_admin():
                             st.error('ลบไม่สำเร็จ')
 
     # ---- Settings & Seed ----
-    with tabs[3]:
+    with tabs[4]:
         st.markdown('### ตั้งค่า & ข้อมูลตัวอย่าง')
         settings_df = load_df('settings')
 
@@ -709,21 +914,26 @@ def render_admin():
         with a:
             if st.button('เติมข้อมูลตัวอย่าง (5 รพ. x 3 วัน)'):
                 demo = [
-                    ('รพ.หาดใหญ่','สงขลา','ภาคใต้','ทีมใต้','WebPortal',['Rider','App','Station to Station'],5),
-                    ('รพ.เชียงใหม่','เชียงใหม่','ภาคเหนือ','ทีมเหนือ','HOSxpV4',['Rider','Station to Station'],7),
-                    ('รพ.ขอนแก่น','ขอนแก่น','ภาคอีสาน','ทีมอีสาน','HOSxpV3',['App'],4),
-                    ('รพ.ชลบุรี','ชลบุรี','ภาคตะวันออก','ทีมเหนือ','WebPortal',['Rider','App'],6),
-                    ('รพ.นครศรีธรรมราช','นครศรีธรรมราช','ภาคใต้','ทีมใต้','HOSxpV4',['Rider','App'],6),
+                    ('รพ.หาดใหญ่','สงขลา','ภาคใต้','ทีมใต้','WebPortal',['Rider','App','Station to Station'],5,'รพ.ศูนย์/รพ.ทั่วไป'),
+                    ('รพ.เชียงใหม่','เชียงใหม่','ภาคเหนือ','ทีมเหนือ','HOSxpV4',['Rider','Station to Station'],7,'รพ.ศูนย์/รพ.ทั่วไป'),
+                    ('รพ.ขอนแก่น','ขอนแก่น','ภาคอีสาน','ทีมอีสาน','HOSxpV3',['App'],4,'รพ.ชุมชน'),
+                    ('รพ.ชลบุรี','ชลบุรี','ภาคตะวันออก','ทีมเหนือ','WebPortal',['Rider','App'],6,'รพ.ศูนย์/รพ.ทั่วไป'),
+                    ('รพ.นครศรีธรรมราช','นครศรีธรรมราช','ภาคใต้','ทีมใต้','HOSxpV4',['Rider','App'],6,'รพ.ศูนย์/รพ.ทั่วไป'),
                 ]
                 name2id={}
-                for n,prov,reg,site,sys,models,rc in demo:
+                for n,prov,reg,site,sys,models,rc,ht in demo:
                     try:
                         ex=sb.table('hospitals').select('id').eq('name',n).execute().data
                         hid=ex[0]['id'] if ex else str(uuid.uuid4())
+                        payload={'id':hid,'name':n,'province':prov,'region':reg,
+                                 'site_control':site,'system_type':sys,'service_models':models,
+                                 'riders_count':rc,'hospital_type':ht}
                         if not ex:
-                            sb.table('hospitals').insert({'id':hid,'name':n,'province':prov,'region':reg,
-                                                          'site_control':site,'system_type':sys,'service_models':models,
-                                                          'riders_count':rc}).execute()
+                            try:
+                                sb.table('hospitals').insert(payload).execute()
+                            except Exception:
+                                payload.pop('hospital_type', None); payload.pop('service_models', None)
+                                sb.table('hospitals').insert(payload).execute()
                         name2id[n]=hid
                     except Exception: pass
                 days=[date.today()-timedelta(days=2),date.today()-timedelta(days=1),date.today()]
