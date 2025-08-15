@@ -207,17 +207,49 @@ CARD_TXT = "#E5E7EB" if DARK else "#334155"
 st.markdown(f"""
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@400;600&display=swap');
+  :root {{
+    --card-bg: {CARD_BG};
+    --card-border: {CARD_BORDER};
+    --card-text: {CARD_TXT};
+  }}
   .stApp {{ font-family:'Kanit',system-ui; }}
-  .main .block-container {{ padding-top: 0.6rem; padding-bottom: 2rem; }}
+
+  /* ลดช่องว่างบน-ล่าง และลด margin ของ H1 */
+  .main .block-container {{ padding-top: 0.25rem; padding-bottom: 1.6rem; }}
+  h1 {{ margin: .25rem 0 .75rem 0 !important; line-height: 1.2; }}
+
+  /* KPI Card */
   .kpi-card {{
-    background:{CARD_BG}; border:1px solid {CARD_BORDER}; color:{CARD_TXT};
+    background:var(--card-bg); border:1px solid var(--card-border); color:var(--card-text);
     border-radius:16px; padding:1rem 1.2rem; box-shadow:0 6px 18px rgba(0,0,0,.08);
   }}
   .kpi-title {{ font-weight:600; opacity:.85; }}
   .kpi-value {{ font-size:1.8rem; font-weight:700; margin-top:.25rem; }}
-  .filter-wrap .stMultiSelect, .filter-wrap .stDateInput {{ margin-bottom:.25rem; }}
+
+  /* กล่องตัวกรอง (การ์ด) + sticky */
+  .filter-sticky {{ position: sticky; top: .25rem; z-index: 5; }}
+  .filter-card {{
+    background:var(--card-bg); border:1px solid var(--card-border); color:var(--card-text);
+    border-radius:16px; padding:12px; box-shadow:0 8px 22px rgba(0,0,0,.06);
+  }}
+
+  /* แต่งหัว expander ให้เป็นการ์ด */
+  .stExpander > div[role='button'] {{
+    background:var(--card-bg); border:1px solid var(--card-border);
+    border-radius:14px; padding:10px 14px;
+  }}
+  .stExpander .streamlit-expanderContent {{
+    background:var(--card-bg); border:1px solid var(--card-border);
+    border-top:none; border-radius:0 0 14px 14px; padding-top:12px;
+  }}
+
+  /* ช่องว่างของ input ในการ์ดตัวกรอง */
+  .filter-card .stDateInput, .filter-card .stButton, .filter-card .stSelectbox, .filter-card .stMultiSelect {{
+    margin-bottom: .35rem;
+  }}
 </style>
 """, unsafe_allow_html=True)
+
 
 def apply_ui_patches():
     st.components.v1.html("""
@@ -315,51 +347,65 @@ def render_dashboard():
     figs: Dict[str, go.Figure] = {}  # เก็บกราฟไว้สำหรับทำ PNG
 
     # ---------- Filters ----------
-    st.markdown("### 🎛️ ตัวกรอง")
-    if 'date_range' not in st.session_state:
+   # ---------- Filters ----------
+st.markdown("### 🎛️ ตัวกรอง")
+
+if 'date_range' not in st.session_state:
+    today = date.today()
+    st.session_state['date_range'] = (today, today)
+
+# กล่องตัวกรองแบบย่อ/ขยาย + sticky
+st.markdown("<div class='filter-sticky'>", unsafe_allow_html=True)
+with st.expander("🎛️ ตัวกรองข้อมูล (คลิกเพื่อย่อ/ขยาย)", expanded=True):
+    st.markdown("<div class='filter-card'>", unsafe_allow_html=True)
+
+    # แถวที่ 1: วันที่ + ปุ่มลัด
+    r1c1, r1c2, r1c3 = st.columns([2, 1.2, 1.2])
+    with r1c1:
         today = date.today()
-        st.session_state['date_range'] = (today, today)
+        dr = st.date_input('📅 ช่วงวันที่', value=st.session_state['date_range'], format="DD/MM/YYYY")
+        if isinstance(dr, tuple) and len(dr)==2:
+            st.session_state['date_range'] = dr
+    with r1c2:
+        cA, cB = st.columns(2)
+        with cA:
+            if st.button('Today', use_container_width=True):
+                st.session_state['date_range'] = (today, today); rerun()
+        with cB:
+            if st.button('เดือนนี้', use_container_width=True):
+                first = today.replace(day=1)
+                st.session_state['date_range'] = (first, today); rerun()
+    with r1c3:
+        if st.button('↺ Reset ตัวกรอง', use_container_width=True):
+            st.session_state['date_range'] = (today, today)
+            for k in ['hosp_sel','site_filter','region_filter','type_filter']:
+                st.session_state[k] = []
+            rerun()
 
-    with st.container():
-        st.markdown("<div class='filter-wrap'>", unsafe_allow_html=True)
-        c_row1_left, c_row1_mid, c_row1_right = st.columns([1.6, 1.4, 1.2])
-        with c_row1_left:
-            today = date.today()
-            # แสดงเป็น วัน/เดือน/ปี
-            dr = st.date_input('📅 ช่วงวันที่', value=st.session_state['date_range'],
-                               format="DD/MM/YYYY")
-            if isinstance(dr, tuple) and len(dr)==2:
-                st.session_state['date_range'] = dr
-        with c_row1_mid:
-            colA, colB = st.columns(2)
-            with colA:
-                if st.button('Today'):
-                    st.session_state['date_range'] = (today, today); rerun()
-            with colB:
-                if st.button('เดือนนี้'):
-                    first = today.replace(day=1)
-                    st.session_state['date_range'] = (first, today); rerun()
-        with c_row1_right:
-            if st.button('↺ Reset ตัวกรอง'):
-                st.session_state['date_range'] = (today, today)
-                for k in ['hosp_sel','site_filter','region_filter','type_filter']:
-                    st.session_state[k] = []
-                rerun()
+    # แถวที่ 2: dropdowns (โรงพยาบาล/ทีม/ภูมิภาค/ประเภท)
+    r2a, r2b, r2c, r2d = st.columns([1.6, 1.2, 1.2, 1.4])
 
-        c_row2_a, c_row2_b, c_row2_c, c_row2_d = st.columns([1.4,1.1,1.1,1.2])
-        with c_row2_a:
-            all_names = sorted(hospitals_df['name'].dropna().unique().tolist()) if 'name' in hospitals_df.columns else []
-            selected_hospitals = multiselect_dropdown("🏥 โรงพยาบาล", all_names, "hosp_sel", default_all=True)
-        with c_row2_b:
-            selected_sites = multiselect_dropdown("🧭 ทีมภูมิภาค", SITE_CONTROL_CHOICES, "site_filter", default_all=True)
-        with c_row2_c:
-            regions = sorted(hospitals_df['region'].dropna().unique().tolist()) if 'region' in hospitals_df.columns else []
-            selected_regions = multiselect_dropdown("🗺️ ภูมิภาค", regions, "region_filter", default_all=True)
-        with c_row2_d:
-            types = sorted(hospitals_df['hospital_type'].dropna().unique().tolist()) if 'hospital_type' in hospitals_df.columns \
-                    else get_master_names('hospital_types', DEFAULT_HOSPITAL_TYPES)
-            selected_types = multiselect_dropdown("🏷️ ประเภทโรงพยาบาล", types, "type_filter", default_all=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+    with r2a:
+        all_names = sorted(hospitals_df['name'].dropna().unique().tolist()) if 'name' in hospitals_df.columns else []
+        selected_hospitals = multiselect_dropdown("🏥 โรงพยาบาล", all_names, "hosp_sel", default_all=True)
+
+    with r2b:
+        selected_sites = multiselect_dropdown("🧭 ทีมภูมิภาค", SITE_CONTROL_CHOICES, "site_filter", default_all=True)
+
+    with r2c:
+        regions = sorted(hospitals_df['region'].dropna().unique().tolist()) if 'region' in hospitals_df.columns else []
+        selected_regions = multiselect_dropdown("🗺️ ภูมิภาค", regions, "region_filter", default_all=True)
+
+    with r2d:
+        types = sorted(hospitals_df['hospital_type'].dropna().unique().tolist()) if 'hospital_type' in hospitals_df.columns \
+                else get_master_names('hospital_types', DEFAULT_HOSPITAL_TYPES)
+        selected_types = multiselect_dropdown("🏷️ ประเภทโรงพยาบาล", types, "type_filter", default_all=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)  # /filter-card
+st.markdown("</div>", unsafe_allow_html=True)      # /filter-sticky
+
+start_date, end_date = st.session_state['date_range']
+
 
     start_date, end_date = st.session_state['date_range']
 
