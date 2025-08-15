@@ -1,4 +1,11 @@
-# Telemedicine Dashboard — Modern Pastel + Dark + Robust Admin (v3.1)
+# DashBoard Telemedicine — v3.2
+# - Title header + Sidebar version
+# - Date filter: default today..today + quick Today/This month
+# - KPI cards styled, Dark/Light aware
+# - Hospital delete: confirm + cascade to transactions (works)
+# - Edit/Delete transaction by (Hospital + Date), searchable
+# - Transactions table: no hospital_id, TH date format
+# - Robust to missing tables (fail-safe load)
 
 import os, uuid, json, bcrypt, requests, random
 import pandas as pd
@@ -10,8 +17,10 @@ from typing import Dict, Any, List
 import streamlit as st
 from supabase import create_client, Client
 
-# ----------------- App config -----------------
-st.set_page_config(page_title="Telemedicine Transactions", page_icon="📊", layout="wide")
+APP_VERSION = "v3.2"
+
+# ---------- App config ----------
+st.set_page_config(page_title="DashBoard Telemedicine", page_icon="📊", layout="wide")
 
 PALETTE_PASTEL = ["#A7C7E7","#F8C8DC","#B6E2D3","#FDE2B3","#EAD7F7","#CDE5F0",
                   "#FFD6E8","#C8E6C9","#FFF3B0","#D7E3FC","#F2D7EE","#B8F1ED"]
@@ -28,7 +37,7 @@ TH_PROVINCES = {
   'ลำปาง':'ภาคเหนือ','อุดรธานี':'ภาคอีสาน','สุราษฎร์ธานี':'ภาคใต้','บุรีรัมย์':'ภาคอีสาน'
 }
 
-# ----------------- Supabase -----------------
+# ---------- Supabase ----------
 SUPABASE_URL = os.getenv('SUPABASE_URL', '')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY', '')
 
@@ -40,7 +49,7 @@ def get_client() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 sb: Client = get_client()
 
-# ----------------- Helpers -----------------
+# ---------- Helpers ----------
 def hash_pw(pw: str) -> str: return bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
 def verify_pw(pw: str, hashed: str) -> bool:
     try: return bcrypt.checkpw(pw.encode(), hashed.encode())
@@ -48,7 +57,6 @@ def verify_pw(pw: str, hashed: str) -> bool:
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_df(table: str) -> pd.DataFrame:
-    """Fail-safe fetch: ถ้า table ไม่มีหรือ error -> คืน DataFrame ว่าง (กันแอปล้ม)"""
     try:
         return pd.DataFrame(sb.table(table).select('*').execute().data)
     except Exception:
@@ -65,32 +73,41 @@ def ensure_default_admin():
     try:
         rows = sb.table('admins').select('username').eq('username','telemed').execute().data
         if not rows:
-            sb.table('admins').insert({'id':str(uuid.uuid4()),
-                                       'username':'telemed',
-                                       'password_hash':hash_pw('Telemed@DHI')}).execute()
+            sb.table('admins').insert({'id':str(uuid.uuid4()),'username':'telemed','password_hash':hash_pw('Telemed@DHI')}).execute()
     except Exception:
         pass
 ensure_default_admin()
 
-# ----------------- Theme -----------------
+# ---------- Theme ----------
 if 'ui' not in st.session_state: st.session_state['ui']={'dark': False}
 with st.sidebar:
     st.markdown('### 🎨 การแสดงผล')
     st.session_state.ui['dark'] = st.checkbox('โหมดมืด (Dark mode)', value=st.session_state.ui['dark'])
+    st.caption(f"Version: **{APP_VERSION}**")
 
 DARK = st.session_state.ui['dark']
 PALETTE = PALETTE_DARK if DARK else PALETTE_PASTEL
 px.defaults.template = 'plotly_dark' if DARK else 'plotly_white'
 px.defaults.color_discrete_sequence = PALETTE
 
-st.markdown("""
+CARD_BG = "#0b1220" if DARK else "#FFFFFF"
+CARD_BORDER = "#1f2937" if DARK else "#E5E7EB"
+CARD_TXT = "#E5E7EB" if DARK else "#334155"
+
+st.markdown(f"""
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@400;600&display=swap');
-  .stApp{font-family:'Kanit',system-ui;}
+  .stApp {{ font-family:'Kanit',system-ui; }}
+  .kpi-card {{
+    background:{CARD_BG}; border:1px solid {CARD_BORDER}; color:{CARD_TXT};
+    border-radius:16px; padding:1rem 1.2rem; box-shadow:0 6px 18px rgba(0,0,0,.08);
+  }}
+  .kpi-title {{ font-weight:600; opacity:.85; }}
+  .kpi-value {{ font-size:1.8rem; font-weight:700; margin-top:.25rem; }}
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------- Auth -----------------
+# ---------- Auth ----------
 if 'auth' not in st.session_state: st.session_state['auth']={'ok':False,'user':None}
 with st.sidebar:
     st.markdown('## 🔐 Admin')
@@ -108,24 +125,46 @@ with st.sidebar:
         st.write(f"✅ {st.session_state.auth['user']}")
         if st.button('Logout'): st.session_state.auth={'ok':False,'user':None}; rerun()
 
-# ----------------- Router -----------------
+# ---------- Router ----------
 page = st.query_params.get('page','dashboard')
 with st.sidebar:
     nav = st.radio('ไปที่', ['dashboard','admin'], index=0 if page=='dashboard' else 1, horizontal=True)
     if nav != page:
         st.query_params.update({'page':nav}); rerun()
 
-# ===================== DASHBOARD =====================
+# ---------- Common: Thai date format ----------
+TH_MONTHS = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.","ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."]
+def th_date(d: date) -> str:
+    return f"{d.day} {TH_MONTHS[d.month-1]} {d.year+543}"
+
+# =======================================================
+# ===============  DASHBOARD  ===========================
+# =======================================================
 def render_dashboard():
+    st.markdown("# DashBoard Telemedicine")
+
     hospitals_df = load_df('hospitals')
     tx_df = load_df('transactions')
 
-    # --- Filters (ใส่ multiselect ไว้ใน expander ให้กินพื้นที่น้อย แต่ยังค้นหา/เลือกหลายได้) ---
+    # ---------- Filters ----------
+    if 'date_range' not in st.session_state:
+        today = date.today()
+        st.session_state['date_range'] = (today, today)  # ครั้งแรก: วันนี้-วันนี้
+
     f1,f2,f3,f4 = st.columns([1.3,1.5,1.5,1])
     with f1:
-        today = date.today(); start_default = today - timedelta(days=30)
-        dr = st.date_input('📅 ช่วงวันที่', value=(start_default, today))
-        start_date, end_date = (dr if isinstance(dr, tuple) else (start_default, today))
+        today = date.today()
+        new_range = st.date_input('📅 ช่วงวันที่', value=st.session_state['date_range'])
+        if isinstance(new_range, tuple): st.session_state['date_range'] = new_range
+        b1,b2 = st.columns(2)
+        with b1:
+            if st.button('Today'):
+                st.session_state['date_range'] = (today, today); rerun()
+        with b2:
+            if st.button('เดือนนี้'):
+                first = today.replace(day=1)
+                st.session_state['date_range'] = (first, today); rerun()
+
     with f2:
         with st.expander('🏥 โรงพยาบาล', expanded=False):
             all_names = sorted(hospitals_df.get('name', pd.Series(dtype=str)).dropna().unique().tolist())
@@ -136,6 +175,7 @@ def render_dashboard():
                 if st.button('เลือกทั้งหมด'): st.session_state.hosp_sel=all_names; rerun()
             with c2:
                 if st.button('ล้างทั้งหมด'): st.session_state.hosp_sel=[]; rerun()
+
     with f3:
         with st.expander('🧭 ทีมภูมิภาค', expanded=False):
             if 'site_filter' not in st.session_state: st.session_state['site_filter']=SITE_CONTROL_CHOICES[:]
@@ -145,8 +185,9 @@ def render_dashboard():
                 if st.button('เลือกทั้งหมดทีม'): st.session_state.site_filter=SITE_CONTROL_CHOICES[:]; rerun()
             with c4:
                 if st.button('ล้างทีม'): st.session_state.site_filter=[]; rerun()
+
     with f4:
-        # ปุ่มแคปหน้าจอยาวทั้งหน้า (html2canvas)
+        # capture full page
         if st.button('📸 แคปหน้าจอ'):
             st.components.v1.html("""
             <script src="https://html2canvas.hertzen.com/dist/html2canvas.min.js"></script>
@@ -165,7 +206,9 @@ def render_dashboard():
             </script>
             """, height=0)
 
-    # --- Merge & filter ---
+    start_date, end_date = st.session_state['date_range']
+
+    # ---------- Merge & filter ----------
     if not tx_df.empty:
         tx_df['date'] = pd.to_datetime(tx_df['date']).dt.date
         tx_df = tx_df[(tx_df['date']>=start_date)&(tx_df['date']<=end_date)]
@@ -176,24 +219,27 @@ def render_dashboard():
     if st.session_state.get('site_filter'): df = df[df['site_control'].isin(st.session_state.site_filter)]
     if st.session_state.get('hosp_sel'): df = df[df['name'].isin(st.session_state.hosp_sel)]
 
-    # --- KPIs ---
-    st.markdown('### 📈 ภาพรวม')
+    # ---------- KPIs (cards) ----------
+    st.markdown("### 📈 ภาพรวม")
     k1,k2,k3,k4,k5 = st.columns(5)
     total_tx = int(df['transactions_count'].sum()) if not df.empty else 0
     uniq_h   = df['hospital_id'].nunique() if not df.empty else 0
     riders_cap = int(df['riders_count'].fillna(0).sum()) if not df.empty else 0
     avg_day  = int(df.groupby('date')['transactions_count'].sum().mean()) if not df.empty else 0
     riders_active = int(df['riders_active'].sum()) if not df.empty else 0
-    k1.metric('Transaction รวม', f"{total_tx:,}")
-    k2.metric('โรงพยาบาลทั้งหมด', f"{uniq_h}")
-    k3.metric('จำนวนไรเดอร์รวม', f"{riders_cap:,}")
-    k4.metric('เฉลี่ยต่อวัน', f"{avg_day:,}")
-    k5.metric('ไรเดอร์ Active', f"{riders_active:,}")
+    for col, title, val in [
+        (k1,'Transaction รวม', f"{total_tx:,}"),
+        (k2,'โรงพยาบาลทั้งหมด', f"{uniq_h}"),
+        (k3,'จำนวนไรเดอร์รวม', f"{riders_cap:,}"),
+        (k4,'เฉลี่ยต่อวัน', f"{avg_day:,}"),
+        (k5,'ไรเดอร์ Active', f"{riders_active:,}")
+    ]:
+        col.markdown(f"<div class='kpi-card'><div class='kpi-title'>{title}</div><div class='kpi-value'>{val}</div></div>", unsafe_allow_html=True)
 
     if df.empty:
         st.info('ไม่มีข้อมูลในช่วงที่เลือก'); return
 
-    # --- Pie ---
+    # ---------- Pie ----------
     st.markdown('#### จำนวน Transaction ตามทีมภูมิภาค (กราฟวงกลม)')
     gsite = df.groupby('site_control').agg({'transactions_count':'sum'}).reset_index().sort_values('transactions_count', ascending=False)
     pie = px.pie(gsite, names='site_control', values='transactions_count',
@@ -205,16 +251,16 @@ def render_dashboard():
     pie.update_layout(annotations=[dict(text=f"{total_tx:,}<br>รวม", x=0.5, y=0.5, showarrow=False, font=dict(size=18))])
     st.plotly_chart(pie, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})
 
-    # --- Horizontal Bar (ใช้ปุ่ม fullscreen ของกราฟเอง) ---
+    # ---------- Bar H ----------
     st.markdown('#### ภาพรวมต่อโรงพยาบาล (แนวนอน)')
     gh = df.groupby('name').agg({'transactions_count':'sum'}).reset_index().sort_values('transactions_count', ascending=True)
     bar = px.bar(gh, y='name', x='transactions_count', orientation='h', text='transactions_count',
                  color='name', color_discrete_sequence=PALETTE)
     bar.update_traces(textposition='outside')
     bar.update_layout(showlegend=False, height=max(520, 30*len(gh)+200), margin=dict(l=140,r=40,t=30,b=40))
-    st.plotly_chart(bar, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})  # มีปุ่ม fullscreen มาตรฐาน
+    st.plotly_chart(bar, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})
 
-    # --- Daily line ---
+    # ---------- Line ----------
     st.markdown('#### แนวโน้มรายวัน (กราฟเส้น)')
     daily = df.groupby('date').agg({'transactions_count':'sum','riders_active':'sum'}).reset_index().sort_values('date')
     if not daily.empty:
@@ -231,7 +277,7 @@ def render_dashboard():
                          xaxis_tickangle=-40, margin=dict(t=30,r=20,b=80,l=60))
         st.plotly_chart(ln, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})
 
-    # --- Table by site ---
+    # ---------- Table by site ----------
     st.markdown('#### ตารางจำนวน Transaction แยกตามทีมภูมิภาค')
     site_tbl = df.groupby('site_control').agg(
         Transactions=('transactions_count','sum'),
@@ -252,14 +298,17 @@ def render_dashboard():
     except Exception:
         st.dataframe(site_tbl, use_container_width=True)
 
-# ===================== ADMIN =====================
+# =======================================================
+# ==================  ADMIN  ============================
+# =======================================================
 def render_admin():
     if not st.session_state.auth['ok']:
         st.warning('กรุณาเข้าสู่ระบบทาง Sidebar ก่อน'); return
 
+    st.markdown("## 🛠️ หน้าการจัดการ (Admin)")
     tabs = st.tabs(['จัดการโรงพยาบาล','จัดการ Transaction','จัดการผู้ดูแล','ตั้งค่า & ข้อมูลตัวอย่าง'])
 
-    # ----- Hospitals -----
+    # ---------- Hospitals ----------
     with tabs[0]:
         hospitals_df = load_df('hospitals')
         st.markdown('### โรงพยาบาล')
@@ -270,6 +319,7 @@ def render_admin():
                 row = hospitals_df[hospitals_df['name']==sel].iloc[0].to_dict()
             else:
                 row = {'id':str(uuid.uuid4())}
+
             name = st.text_input('ชื่อโรงพยาบาล', value=row.get('name',''))
             provs = list(TH_PROVINCES.keys()); pidx = provs.index(row.get('province')) if row.get('province') in provs else 0
             province = st.selectbox('จังหวัด', provs, index=pidx)
@@ -281,6 +331,7 @@ def render_admin():
             models = st.multiselect('โมเดลบริการ', SERVICE_MODEL_CHOICES,
                                     default=[m for m in (row.get('service_models') or []) if m in SERVICE_MODEL_CHOICES])
             riders_count = st.number_input('จำนวน Rider (Capacity)', min_value=0, step=1, value=int(row.get('riders_count',0)))
+
             c1,c2 = st.columns(2)
             with c1:
                 if st.button('บันทึกโรงพยาบาล'):
@@ -293,24 +344,35 @@ def render_admin():
                         if edit_mode: sb.table('hospitals').update(payload).eq('id', row['id']).execute()
                         else: sb.table('hospitals').insert(payload).execute()
                         st.success('บันทึกเรียบร้อย'); load_df.clear(); rerun()
-                    except Exception as e:
+                    except Exception:
                         st.error('บันทึกไม่สำเร็จ')
+
             with c2:
-                if edit_mode and st.button('🗑️ ลบโรงพยาบาลนี้'):
-                    st.warning('การลบจะลบ Transaction ของโรงพยาบาลนี้ทั้งหมดด้วย!')
-                    if st.button('ยืนยันการลบ', type='primary'):
-                        try:
-                            sb.table('transactions').delete().eq('hospital_id', row['id']).execute()
-                            sb.table('hospitals').delete().eq('id', row['id']).execute()
-                            st.success('ลบเรียบร้อย'); load_df.clear(); rerun()
-                        except Exception:
-                            st.error('ลบไม่สำเร็จ')
+                # ยืนยันสองจังหวะด้วย state
+                if edit_mode and st.button('🗑️ ลบโรงพยาบาลนี้', key='ask_del_hosp'):
+                    st.session_state['pending_delete_hosp_id'] = row['id']
+                if st.session_state.get('pending_delete_hosp_id') == row.get('id'):
+                    st.warning('การลบจะลบ Transaction ของโรงพยาบาลนี้ทั้งหมดด้วย! ยืนยันหรือไม่?')
+                    cA,cB = st.columns(2)
+                    with cA:
+                        if st.button('ยืนยันการลบ', key='confirm_del_hosp'):
+                            try:
+                                sb.table('transactions').delete().eq('hospital_id', row['id']).execute()
+                                sb.table('hospitals').delete().eq('id', row['id']).execute()
+                                st.success('ลบเรียบร้อย')
+                                st.session_state.pop('pending_delete_hosp_id', None)
+                                load_df.clear(); rerun()
+                            except Exception:
+                                st.error('ลบไม่สำเร็จ')
+                    with cB:
+                        if st.button('ยกเลิก', key='cancel_del_hosp'):
+                            st.session_state.pop('pending_delete_hosp_id', None); rerun()
 
         st.markdown('#### รายชื่อโรงพยาบาล')
         cols = [c for c in ['name','province','region','site_control','system_type','service_models','riders_count'] if c in hospitals_df.columns]
         st.dataframe(hospitals_df[cols] if not hospitals_df.empty else pd.DataFrame(columns=cols), use_container_width=True)
 
-    # ----- Transactions -----
+    # ---------- Transactions ----------
     with tabs[1]:
         hospitals_df = load_df('hospitals')
         st.markdown('### Transaction ต่อวัน')
@@ -318,12 +380,13 @@ def render_admin():
             st.info('ยังไม่มีโรงพยาบาล — เพิ่มก่อน')
         else:
             name2id = {r['name']:r['id'] for _,r in hospitals_df.iterrows()}
+
             with st.expander('➕ เพิ่ม Transaction รายวัน'):
                 hname = st.selectbox('โรงพยาบาล (ค้นหาได้)', list(name2id.keys()))
-                tx_date = st.date_input('วันที่', value=date.today())
-                tx_num = st.number_input('Transactions', min_value=0, step=1)
-                riders_active = st.number_input('Rider Active', min_value=0, step=1)
-                if st.button('บันทึก Transaction'):
+                tx_date = st.date_input('วันที่', value=date.today(), key='add_tx_date')
+                tx_num = st.number_input('Transactions', min_value=0, step=1, key='add_tx_num')
+                riders_active = st.number_input('Rider Active', min_value=0, step=1, key='add_tx_ra')
+                if st.button('บันทึก Transaction', key='add_tx_btn'):
                     hid = name2id[hname]
                     try:
                         rc = int(hospitals_df.loc[hospitals_df['id']==hid,'riders_count'].iloc[0])
@@ -343,46 +406,45 @@ def render_admin():
             else:
                 raw_tx['date'] = pd.to_datetime(raw_tx['date']).dt.date
                 tx_view = raw_tx.merge(hospitals_df[['id','name']], left_on='hospital_id', right_on='id', how='left')
-                desired = ['id','date','name','transactions_count','riders_active','hospital_id']
-                show = safe_cols(tx_view, desired)
-                st.dataframe(tx_view[show].rename(columns={'name':'โรงพยาบาล','date':'วันที่','transactions_count':'Transactions','riders_active':'Rider Active'}),
+                # แสดงวันที่แบบไทย + ไม่โชว์ hospital_id
+                tx_view['วันที่'] = tx_view['date'].apply(th_date)
+                show = safe_cols(tx_view, ['วันที่','name','transactions_count','riders_active'])
+                st.dataframe(tx_view[show].rename(columns={'name':'โรงพยาบาล','transactions_count':'Transactions','riders_active':'Rider Active'}),
                              use_container_width=True)
 
-            with st.expander('✏️ แก้ไข / ลบ Transaction'):
-                raw_tx = load_df('transactions')
-                if not raw_tx.empty:
-                    pick_id = st.selectbox('เลือกแถว', raw_tx['id'].tolist())
-                    row = raw_tx[raw_tx['id']==pick_id].iloc[0].to_dict()
-                    id2name = {r['id']:r['name'] for _,r in hospitals_df.iterrows()}
-                    name2id = {v:k for k,v in id2name.items()}
-                    hsel = st.selectbox('โรงพยาบาล', list(name2id.keys()),
-                        index=list(name2id.keys()).index(id2name.get(row['hospital_id'], list(name2id.keys())[0])))
-                    dsel = st.date_input('วันที่', value=pd.to_datetime(row['date']).date())
+            with st.expander('✏️ แก้ไข / ลบ ตาม โรงพยาบาล + วันที่'):
+                h_edit = st.selectbox('โรงพยาบาล', list(name2id.keys()), key='edit_pick_h')
+                d_edit = st.date_input('วันที่', value=date.today(), key='edit_pick_d')
+                # หาแถวที่ตรง
+                pick_df = raw_tx[(raw_tx['hospital_id']==name2id[h_edit]) & (pd.to_datetime(raw_tx['date']).dt.date==d_edit)]
+                if pick_df.empty:
+                    st.info('ไม่พบข้อมูลของโรงพยาบาล/วันที่นี้')
+                else:
+                    row = pick_df.iloc[0].to_dict()
                     nsel = st.number_input('Transactions', min_value=0, step=1, value=int(row.get('transactions_count',0)))
                     rsel = st.number_input('Rider Active', min_value=0, step=1, value=int(row.get('riders_active',0)))
                     c1,c2 = st.columns(2)
                     with c1:
-                        if st.button('บันทึกการแก้ไข'):
-                            hid = name2id[hsel]
+                        if st.button('บันทึกการแก้ไข', key='save_edit_tx'):
+                            hid = name2id[h_edit]
                             try:
                                 rc = int(hospitals_df.loc[hospitals_df['id']==hid,'riders_count'].iloc[0])
                                 if rsel > rc: st.error('Rider Active มากกว่า Capacity'); st.stop()
                                 sb.table('transactions').update({
-                                    'hospital_id':hid,'date':dsel.isoformat(),
                                     'transactions_count':int(nsel),'riders_active':int(rsel)
-                                }).eq('id', pick_id).execute()
+                                }).eq('id', row['id']).execute()
                                 st.success('อัปเดตแล้ว'); load_df.clear(); rerun()
                             except Exception:
                                 st.error('อัปเดตไม่สำเร็จ')
                     with c2:
-                        if st.button('ลบแถวนี้'):
+                        if st.button('ลบรายการนี้', key='del_edit_tx'):
                             try:
-                                sb.table('transactions').delete().eq('id', pick_id).execute()
+                                sb.table('transactions').delete().eq('id', row['id']).execute()
                                 st.success('ลบแล้ว'); load_df.clear(); rerun()
                             except Exception:
                                 st.error('ลบไม่สำเร็จ')
 
-    # ----- Admins -----
+    # ---------- Admins ----------
     with tabs[2]:
         st.markdown('### ผู้ดูแลระบบ')
         admins_df = load_df('admins')
@@ -420,19 +482,16 @@ def render_admin():
                         except Exception:
                             st.error('ลบไม่สำเร็จ')
 
-    # ----- Settings & Seed -----
+    # ---------- Settings & Seed ----------
     with tabs[3]:
         st.markdown('### ตั้งค่า & ข้อมูลตัวอย่าง')
-        settings_df = load_df('settings')  # ถ้า table ไม่มี -> ได้ DF ว่าง
-
-        # อ่านค่าแบบปลอดภัย
+        settings_df = load_df('settings')
         def get_setting(key, default):
             try:
                 v = settings_df.loc[settings_df['key']==key, 'value'].iloc[0]
                 return v if isinstance(v, dict) else default
             except Exception:
                 return default
-
         targets = get_setting('targets', {'daily_transactions':50,'utilization_alert_pct':90})
         line_cfg = get_setting('line_notify', {'enabled':False,'token':''})
 
@@ -502,7 +561,7 @@ def render_admin():
                 except Exception:
                     st.error('ลบข้อมูลตัวอย่างไม่สำเร็จ')
 
-# ----------------- Render -----------------
+# ---------- Render ----------
 if st.query_params.get('page','dashboard') == 'admin':
     render_admin()
 else:
