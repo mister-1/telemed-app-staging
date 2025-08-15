@@ -1,5 +1,6 @@
-# DashBoard Telemedicine — v4.5.0 (full)
-# ฟีเจอร์หลัก:
+# DashBoard Telemedicine — v4.6.0
+# เพิ่ม: ปุ่ม "⬇️ ดาวน์โหลดภาพ PNG" รวมกราฟทั้งหมดแบบยาว (สร้างไฟล์ฝั่งเซิร์ฟเวอร์ด้วย plotly+kaleido)
+# ฟีเจอร์รวม:
 # - Dashboard ตัวกรองครบ (วันที่/โรงพยาบาล/ทีม/ภูมิภาค/ประเภท)
 # - กราฟ: วงกลมตามทีม, ภาพรวมต่อโรงพยาบาล (เลือกเรียง), แนวโน้มรายวัน (เส้นโค้ง)
 # - ตารางสรุปสีพาสเทล
@@ -8,20 +9,21 @@
 # - Reports รายเดือน + ดาวน์โหลด Excel + ส่ง LINE Notify
 # - Admin: จัดการโรงพยาบาล, Transaction รายวัน (เพิ่ม/แก้/ลบ), ข้อมูลหลัก (ประเภท/โมเดลบริการ),
 #          จัดการผู้ดูแลและบทบาท (admin/editor/viewer)
-# - ปุ่มแคปหน้าจอ (PNG) ดาวน์โหลดอัตโนมัติ + เปิดแท็บใหม่เป็น fallback
 # - ธีมพาสเทล + โหมดมืด (ครอบทั้งกราฟ/ตาราง)
-# - ป้องกันการป้อน Transaction ซ้ำ (DB level: unique index / App level: upsert)
+# - ป้องกันการป้อน Transaction ซ้ำ (DB: unique index / App: upsert)
 
 import os, uuid, json, bcrypt, requests, random, io
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
+from PIL import Image, ImageDraw, ImageFont
 from datetime import date, datetime, timedelta
 from typing import List, Dict
 import streamlit as st
 from supabase import create_client, Client
 
-APP_VERSION = "v4.5.0"
+APP_VERSION = "v4.6.0"
 
 # ---------------- Page / Theme ----------------
 st.set_page_config(page_title="DashBoard Telemedicine", page_icon="📊", layout="wide")
@@ -146,6 +148,50 @@ def plot(fig, key: str, config: dict | None = None):
     if config: base.update(config)
     st.plotly_chart(fig, use_container_width=True, config=base, key=key)
 
+# -------- PNG Builder (Server-side) --------
+def build_dashboard_png(figs: dict, title: str, subtitle: str, dark: bool=False) -> bytes:
+    """รวมกราฟหลายอันให้เป็นภาพ PNG เดียวแบบยาว"""
+    images = []
+    order = ['pie_sitecontrol','pie_hospital_type','bar_hospital_type',
+             'bar_hospital_overview','line_daily_trend']
+    for k in order:
+        fig = figs.get(k)
+        if fig is not None:
+            try:
+                img_bytes = pio.to_image(fig, format="png", scale=2)  # ต้องมี kaleido
+                images.append(Image.open(io.BytesIO(img_bytes)))
+            except Exception:
+                pass
+
+    bg = (17,24,39) if dark else (248,250,252)
+    title_color = (229,231,235) if dark else (17,24,39)
+    sub_color   = (203,213,225) if dark else (55,65,81)
+
+    if not images:
+        im = Image.new("RGB", (1280, 320), bg)
+        d = ImageDraw.Draw(im); f = ImageFont.load_default()
+        d.text((40,40), title, fill=title_color, font=f)
+        d.text((40,80), subtitle, fill=sub_color, font=f)
+        buf = io.BytesIO(); im.save(buf, "PNG"); return buf.getvalue()
+
+    pad, header = 40, 140
+    width = max(i.width for i in images)
+    height = header + sum(i.height for i in images) + pad*(len(images)+1)
+    canvas = Image.new("RGB", (width+pad*2, height), bg)
+
+    d = ImageDraw.Draw(canvas); f = ImageFont.load_default()
+    d.text((pad, 20), title, fill=title_color, font=f)
+    d.text((pad, 60), subtitle, fill=sub_color, font=f)
+
+    y = header
+    for im in images:
+        canvas.paste(im, (pad, y))
+        y += im.height + pad
+
+    buf = io.BytesIO()
+    canvas.save(buf, "PNG")
+    return buf.getvalue()
+
 # ---------------- Theme/UI ----------------
 if 'ui' not in st.session_state: st.session_state['ui']={'dark': False}
 with st.sidebar:
@@ -265,6 +311,9 @@ def render_dashboard():
     hospitals_df = load_df('hospitals')
     tx_df = load_df('transactions')
 
+    # จะเก็บกราฟไว้รวมเป็น PNG
+    figs: Dict[str, go.Figure] = {}
+
     # ---------- Filters ----------
     st.markdown("### 🎛️ ตัวกรอง")
     if 'date_range' not in st.session_state:
@@ -309,29 +358,6 @@ def render_dashboard():
                     else get_master_names('hospital_types', DEFAULT_HOSPITAL_TYPES)
             selected_types = multiselect_dropdown("🏷️ ประเภทโรงพยาบาล", types, "type_filter", default_all=True)
         st.markdown("</div>", unsafe_allow_html=True)
-
-    # ---- Screenshot button ----
-    cap_col = st.columns([1,3,1])[0]
-    with cap_col:
-        if st.button('📸 แคปหน้าจอ (PNG)'):
-            st.components.v1.html("""
-            <script src="https://html2canvas.hertzen.com/dist/html2canvas.min.js"></script>
-            <script>
-            (async () => {
-              const el = document.body; await new Promise(r=>setTimeout(r,350));
-              html2canvas(el,{useCORS:true,windowWidth:document.body.scrollWidth,
-                              windowHeight:document.body.scrollHeight,scale:2})
-              .then(cv=>{
-                 const data=cv.toDataURL('image/png');
-                 const a=document.createElement('a');
-                 a.download=`telemed-dashboard-${new Date().toISOString().slice(0,10)}.png`;
-                 a.href=data; document.body.appendChild(a); a.click(); a.remove();
-                 const w=window.open(); if(w){ w.document.write('<title>Dashboard Capture</title>');
-                   const img=new Image(); img.src=data; img.style='width:100%'; w.document.body.appendChild(img); }
-              });
-            })();
-            </script>
-            """, height=0)
 
     start_date, end_date = st.session_state['date_range']
 
@@ -384,6 +410,7 @@ def render_dashboard():
                               pull=[0.02]*len(gsite))
             pie.update_layout(annotations=[dict(text=f"{total_tx:,}<br>รวม", x=0.5, y=0.5, showarrow=False, font=dict(size=18))])
             plot(pie, key="pie_sitecontrol")
+            figs['pie_sitecontrol'] = pie
         else:
             render_chart_placeholder('#### จำนวน Transaction ตามทีมภูมิภาค (กราฟวงกลม)', key="ph_site_pie")
     else:
@@ -423,6 +450,7 @@ def render_dashboard():
                                 pull=[0.02]*len(gtype_sum))
             pie_t.update_layout(annotations=[dict(text=f"{int(gtype_sum.transactions_count.sum()):,}<br>รวม", x=0.5, y=0.5, showarrow=False, font=dict(size=16))])
             plot(pie_t, key="pie_hospital_type")
+            figs['pie_hospital_type'] = pie_t
 
         with c2:
             st.markdown('#### ภาพรวมตามประเภทโรงพยาบาล')
@@ -436,48 +464,7 @@ def render_dashboard():
                                 yaxis_title='ประเภท', xaxis_title='Transactions',
                                 height=max(420, 50*len(gtype_for_bar)+180))
             plot(bar_t, key="bar_hospital_type")
-
-        st.markdown('#### ตารางสรุปตามประเภทโรงพยาบาล')
-        show_tbl = gtype_sum.rename(columns={
-            'hospital_type': 'ประเภท',
-            'hospitals_count': 'Hospitals',
-            'transactions_count': 'Transactions',
-            'riders_active': 'Rider Active',
-            'riders_total': 'Riders Total',
-            'avg_tx_per_hosp': 'Avg Tx/รพ.'
-        }).copy()
-        show_tbl['Hospitals'] = show_tbl['Hospitals'].map('{:,}'.format)
-        show_tbl['Transactions'] = show_tbl['Transactions'].map('{:,}'.format)
-        show_tbl['Rider Active'] = show_tbl['Rider Active'].map('{:,}'.format)
-        show_tbl['Riders Total'] = show_tbl['Riders Total'].map('{:,}'.format)
-        show_tbl['Avg Tx/รพ.'] = show_tbl['Avg Tx/รพ.'].map(lambda x: f"{x:,.1f}")
-
-        header_fill = '#111827' if DARK else '#E6EFFF'
-        header_font = '#E5E7EB' if DARK else '#1F2937'
-        header_line = '#374151' if DARK else '#BFD2FF'
-        rgba = [
-            'rgba(167,199,231,0.15)','rgba(248,200,220,0.15)','rgba(182,226,211,0.15)',
-            'rgba(253,226,179,0.15)','rgba(234,215,247,0.15)','rgba(205,229,240,0.15)'
-        ]
-        row_colors = [rgba[i % len(rgba)] for i in range(len(show_tbl))]
-        fill_matrix = [row_colors]*len(show_tbl.columns)
-
-        figt2 = go.Figure(data=[go.Table(
-            header=dict(
-                values=[f"<b>{c}</b>" for c in show_tbl.columns],
-                fill_color=header_fill,
-                font=dict(color=header_font, size=13),
-                align='left', height=34,
-                line_color=header_line, line_width=1.2
-            ),
-            cells=dict(
-                values=[show_tbl[c] for c in show_tbl.columns],
-                fill_color=fill_matrix,
-                align='left', height=28
-            )
-        )])
-        figt2.update_layout(margin=dict(l=0,r=0,t=0,b=0))
-        plot(figt2, key="tbl_hospital_type")
+            figs['bar_hospital_type'] = bar_t
     else:
         render_chart_placeholder('#### สัดส่วน/ภาพรวมตามประเภทโรงพยาบาล', key="ph_type_summary")
 
@@ -508,6 +495,7 @@ def render_dashboard():
             xaxis_title='Transactions'
         )
         plot(bar, key="bar_hospital_overview")
+        figs['bar_hospital_overview'] = bar
     else:
         render_chart_placeholder('#### ภาพรวมต่อโรงพยาบาล', key="ph_hospital_overview")
 
@@ -539,6 +527,7 @@ def render_dashboard():
             ln.update_layout(xaxis_title='วัน/เดือน/ปี', yaxis_title='จำนวน',
                              xaxis_tickangle=-40, margin=dict(t=30,r=20,b=80,l=60))
             plot(ln, key="line_daily_trend")
+            figs['line_daily_trend'] = ln
         else:
             render_chart_placeholder('#### แนวโน้มรายวัน', key="ph_daily_trend")
     else:
@@ -589,7 +578,24 @@ def render_dashboard():
     else:
         st.info('ไม่มีข้อมูลตารางในช่วงที่เลือก')
 
-    # ---- Export ----
+    # ===== Export snapshot as PNG =====
+    st.markdown("### 📸 ดาวน์โหลดภาพ PNG")
+    subtitle = (
+        f"ช่วง {th_date(start_date)} – {th_date(end_date)}  |  "
+        f"โรงพยาบาล: "
+        f"{'ทั้งหมด' if not selected_hospitals or len(selected_hospitals)==len(all_names) else ', '.join(selected_hospitals)}  |  "
+        f"ทีม: {'ทั้งหมด' if not selected_sites or len(selected_sites)==len(SITE_CONTROL_CHOICES) else ', '.join(selected_sites)}"
+    )
+    png_bytes = build_dashboard_png(figs, "DashBoard Telemedicine", subtitle, dark=DARK)
+    st.download_button(
+        "⬇️ ดาวน์โหลดภาพ PNG",
+        data=png_bytes,
+        file_name=f"telemed_dashboard_{date.today().isoformat()}.png",
+        mime="image/png",
+        use_container_width=True
+    )
+
+    # ---- Export CSV/Excel ----
     st.markdown("### ⬇️ ส่งออกข้อมูลที่กรองแล้ว")
     if not df.empty:
         df_csv = df.copy()
@@ -735,7 +741,6 @@ def render_admin():
                     if st.button('บันทึก Transaction', key='add_tx_btn', disabled=not can_edit):
                         hid = name2id[hname]
                         try:
-                            # กันซ้ำด้วย upsert (hospital_id+date)
                             rc_series = hospitals_df.loc[hospitals_df['id']==hid,'riders_count']
                             rc = int(rc_series.iloc[0]) if not rc_series.empty else 0
                             if riders_active > rc:
