@@ -1,9 +1,8 @@
-# DashBoard Telemedicine — v3.7
-# - Add Tx duplicate UX: go-to-edit & cancel buttons
-# - Admin tabs always show data (admins/settings) with raw tables when present
-# - Dashboard: no early return; show placeholders if no data (avoid "missing one chart")
-# - Filter area: cleaner layout (section header, reset button, tidy columns)
-# - Dropdown multiselects safe (no widget-state overwrites)
+# DashBoard Telemedicine — v3.8
+# - Fix "Go to edit" after duplicate: force widget defaults in Edit expander + close Add expander
+# - Add "Cancel" to Add form (close Add expander and rerun)
+# - Rename chart title & set Y-axis: ภาพรวมต่อโรงพยาบาล + yaxis_title='ชื่อโรงพยาบาล'
+# - Keep all v3.7 features (placeholders, tidy filters, etc.)
 
 import os, uuid, json, bcrypt, requests, random
 import pandas as pd
@@ -14,7 +13,7 @@ from typing import List
 import streamlit as st
 from supabase import create_client, Client
 
-APP_VERSION = "v3.7"
+APP_VERSION = "v3.8"
 
 # ---------------- App / Theme ----------------
 st.set_page_config(page_title="DashBoard Telemedicine", page_icon="📊", layout="wide")
@@ -138,10 +137,6 @@ def th_date(d: date) -> str:
 
 # ---------- Dropdown-style multiselect (no widget-state writes) ----------
 def multiselect_dropdown(label: str, options: list, state_key: str, default_all: bool = True):
-    """
-    Dropdown (popover/expander) + search + Select All / Clear / Done.
-    เก็บสถานะใน st.session_state[state_key] เท่านั้น แล้ว rerun หลังคลิกปุ่ม
-    """
     options = options or []
     current = st.session_state.get(state_key, options[:] if default_all else [])
     current = [x for x in current if x in options]
@@ -182,9 +177,8 @@ def render_dashboard():
     hospitals_df = load_df('hospitals')
     tx_df = load_df('transactions')
 
-    # ---------- Filters area (tidy layout) ----------
+    # ---------- Filters area ----------
     st.markdown("### 🎛️ ตัวกรอง")
-    # default date range = today..today
     if 'date_range' not in st.session_state:
         today = date.today()
         st.session_state['date_range'] = (today, today)
@@ -206,13 +200,11 @@ def render_dashboard():
                 st.session_state['date_range'] = (first, today); rerun()
     with c_row1_right:
         if st.button('↺ Reset ตัวกรอง'):
-            # reset date to today..today and clear selections
             st.session_state['date_range'] = (today, today)
             st.session_state['hosp_sel'] = []
             st.session_state['site_filter'] = []
             rerun()
 
-    # Row 2: dropdowns
     c_row2_left, c_row2_right = st.columns([1.6,1.2])
     with c_row2_left:
         all_names = sorted(hospitals_df['name'].dropna().unique().tolist()) if 'name' in hospitals_df.columns else []
@@ -286,20 +278,26 @@ def render_dashboard():
     else:
         render_chart_placeholder('#### จำนวน Transaction ตามทีมภูมิภาค (กราฟวงกลม)')
 
-    # ---- Horizontal Bar by Hospital ----
+    # ---- Horizontal Bar by Hospital (rename + y-axis label) ----
     if not df.empty:
         gh = df.groupby('name').agg({'transactions_count':'sum'}).reset_index().sort_values('transactions_count', ascending=True)
         if not gh.empty:
-            st.markdown('#### ภาพรวมต่อโรงพยาบาล (แนวนอน)')
+            st.markdown('#### ภาพรวมต่อโรงพยาบาล')
             bar = px.bar(gh, y='name', x='transactions_count', orientation='h', text='transactions_count',
-                        color='name', color_discrete_sequence=PALETTE)
+                         color='name', color_discrete_sequence=PALETTE)
             bar.update_traces(textposition='outside')
-            bar.update_layout(showlegend=False, height=max(520, 30*len(gh)+200), margin=dict(l=140,r=40,t=30,b=40))
+            bar.update_layout(
+                showlegend=False,
+                height=max(520, 30*len(gh)+200),
+                margin=dict(l=160,r=40,t=30,b=40),
+                yaxis_title='ชื่อโรงพยาบาล',
+                xaxis_title='Transactions'
+            )
             st.plotly_chart(bar, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})
         else:
-            render_chart_placeholder('#### ภาพรวมต่อโรงพยาบาล (แนวนอน)')
+            render_chart_placeholder('#### ภาพรวมต่อโรงพยาบาล')
     else:
-        render_chart_placeholder('#### ภาพรวมต่อโรงพยาบาล (แนวนอน)')
+        render_chart_placeholder('#### ภาพรวมต่อโรงพยาบาล')
 
     # ---- Daily Trend line ----
     if not df.empty:
@@ -316,7 +314,7 @@ def render_dashboard():
                                     name='Rider Active', visible='legendonly',
                                     line=dict(width=2, dash='dot')))
             ln.update_layout(xaxis_title='วัน/เดือน/ปี', yaxis_title='จำนวน',
-                            xaxis_tickangle=-40, margin=dict(t=30,r=20,b=80,l=60))
+                             xaxis_tickangle=-40, margin=dict(t=30,r=20,b=80,l=60))
             st.plotly_chart(ln, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})
         else:
             render_chart_placeholder('#### แนวโน้มรายวัน (กราฟเส้น)')
@@ -350,7 +348,7 @@ def render_dashboard():
                 header=dict(values=list(show_df.columns), fill_color=header_fill, font=dict(color=header_font, size=12),
                             align='left', height=30),
                 cells=dict(values=[show_df[c] for c in show_df.columns], fill_color=fill_matrix,
-                        align='left', height=28)
+                           align='left', height=28)
             )])
             figt.update_layout(margin=dict(l=0,r=0,t=0,b=0))
             st.plotly_chart(figt, use_container_width=True, config={'displaylogo': False})
@@ -430,8 +428,12 @@ def render_admin():
         else:
             name2id = {r['name']:r['id'] for _,r in hospitals_df.iterrows()}
 
+            # state: control expanders
+            if 'open_add_tx' not in st.session_state:
+                st.session_state['open_add_tx'] = True
+
             # เพิ่ม (prevent duplicate + UX)
-            with st.expander('➕ เพิ่ม Transaction รายวัน'):
+            with st.expander('➕ เพิ่ม Transaction รายวัน', expanded=st.session_state.get('open_add_tx', True)):
                 hname = st.selectbox('โรงพยาบาล (ค้นหาได้)', list(name2id.keys()), key='add_tx_hosp')
                 tx_date = st.date_input('วันที่', value=date.today(), key='add_tx_date')
                 tx_num = st.number_input('Transactions', min_value=0, step=1, key='add_tx_num')
@@ -450,10 +452,12 @@ def render_admin():
                                         st.session_state['open_edit_tx'] = True
                                         st.session_state['edit_target_h'] = hname
                                         st.session_state['edit_target_d'] = tx_date
+                                        st.session_state['force_edit_reset'] = True
+                                        st.session_state['open_add_tx'] = False
                                         rerun()
                                 with g2:
                                     if st.button('ยกเลิก', key='cancel_dup'):
-                                        # ไม่แตะต้อง widget-state ตรง ๆ แค่ rerun กลับ
+                                        st.session_state['open_add_tx'] = False
                                         rerun()
                                 st.stop()
                             rc = int(hospitals_df.loc[hospitals_df['id']==hid,'riders_count'].iloc[0])
@@ -468,6 +472,7 @@ def render_admin():
                             st.error('บันทึกไม่สำเร็จ')
                 with cbtn2:
                     if st.button('ยกเลิก', key='cancel_add_tx'):
+                        st.session_state['open_add_tx'] = False
                         rerun()
 
             # ตาราง (ไม่โชว์ hospital_id + วันที่แบบไทย)
@@ -482,7 +487,7 @@ def render_admin():
                 st.dataframe(tx_view[show].rename(columns={'name':'โรงพยาบาล','transactions_count':'Transactions','riders_active':'Rider Active'}),
                              use_container_width=True)
 
-            # แก้ไข/ลบ โดยเลือก "โรงพยาบาล + วันที่"  (รองรับ deep-link จาก duplicate)
+            # แก้ไข/ลบ โดยเลือก "โรงพยาบาล + วันที่" (รองรับ deep-link จาก duplicate)
             default_h = st.session_state.get('edit_target_h')
             default_d = st.session_state.get('edit_target_d', date.today())
             try:
@@ -490,6 +495,12 @@ def render_admin():
             except Exception:
                 idx_default_h = 0
             exp_open = st.session_state.get('open_edit_tx', False)
+
+            # ถ้าถูกสั่งเปิดจาก duplicate -> ล้าง key widget เพื่อให้ index/value default ทำงาน
+            if exp_open and st.session_state.get('force_edit_reset', False):
+                for k in ['edit_pick_h','edit_pick_d']:
+                    if k in st.session_state: st.session_state.pop(k)
+                st.session_state['force_edit_reset'] = False
 
             with st.expander('✏️ แก้ไข / ลบ ตาม โรงพยาบาล + วันที่', expanded=exp_open):
                 h_edit = st.selectbox('โรงพยาบาล', list(name2id.keys()), index=idx_default_h, key='edit_pick_h')
@@ -508,7 +519,6 @@ def render_admin():
                                 sb.table('transactions').update({
                                     'transactions_count':int(nsel),'riders_active':int(rsel)
                                 }).eq('id', row['id']).execute()
-                                # clear deep-link flags
                                 for k in ['open_edit_tx','edit_target_h','edit_target_d']:
                                     st.session_state.pop(k, None)
                                 st.success('อัปเดตแล้ว'); load_df.clear(); rerun()
@@ -524,7 +534,7 @@ def render_admin():
                             except Exception:
                                 st.error('ลบไม่สำเร็จ')
 
-            # reset flag so expander ไม่ค้างเปิด
+            # reset flags (ครั้งถัดไป expander จะไม่ค้างเปิด)
             st.session_state['open_edit_tx'] = False
 
     # ---- Admin users ----
