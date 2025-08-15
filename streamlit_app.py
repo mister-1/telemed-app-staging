@@ -1,11 +1,16 @@
-# DashBoard Telemedicine — v4.5.0
-# New:
-# - Export CSV/Excel (filtered/aggregated data)
-# - Import CSV (append/update by hospital+date) with duplicate protection
-# - Reports tab: monthly summary, download Excel, send LINE Notify
-# - Roles: admin/editor/viewer with UI control
-# - Screenshot button: auto-download PNG + open in new tab (fallback)
-# - UI polishing for filters/cards/tables; dark mode consistency
+# DashBoard Telemedicine — v4.5.0 (full)
+# ฟีเจอร์หลัก:
+# - Dashboard ตัวกรองครบ (วันที่/โรงพยาบาล/ทีม/ภูมิภาค/ประเภท)
+# - กราฟ: วงกลมตามทีม, ภาพรวมต่อโรงพยาบาล (เลือกเรียง), แนวโน้มรายวัน (เส้นโค้ง)
+# - ตารางสรุปสีพาสเทล
+# - Export CSV / Excel (หลายชีต)
+# - Import CSV (กันซ้ำ hospital+date) + สร้าง รพ. อัตโนมัติ (ตัวเลือก)
+# - Reports รายเดือน + ดาวน์โหลด Excel + ส่ง LINE Notify
+# - Admin: จัดการโรงพยาบาล, Transaction รายวัน (เพิ่ม/แก้/ลบ), ข้อมูลหลัก (ประเภท/โมเดลบริการ),
+#          จัดการผู้ดูแลและบทบาท (admin/editor/viewer)
+# - ปุ่มแคปหน้าจอ (PNG) ดาวน์โหลดอัตโนมัติ + เปิดแท็บใหม่เป็น fallback
+# - ธีมพาสเทล + โหมดมืด (ครอบทั้งกราฟ/ตาราง)
+# - ป้องกันการป้อน Transaction ซ้ำ (DB level: unique index / App level: upsert)
 
 import os, uuid, json, bcrypt, requests, random, io
 import pandas as pd
@@ -18,7 +23,7 @@ from supabase import create_client, Client
 
 APP_VERSION = "v4.5.0"
 
-# ---------------- App / Theme ----------------
+# ---------------- Page / Theme ----------------
 st.set_page_config(page_title="DashBoard Telemedicine", page_icon="📊", layout="wide")
 
 PALETTE_PASTEL = ["#A7C7E7","#F8C8DC","#B6E2D3","#FDE2B3","#EAD7F7","#CDE5F0",
@@ -31,31 +36,25 @@ SYSTEM_CHOICES = ['HOSxpV4', 'HOSxpV3', 'WebPortal']
 DEFAULT_SERVICE_MODELS = ['Rider', 'App', 'Station to Station']
 DEFAULT_HOSPITAL_TYPES = ['รพ.ศูนย์/รพ.ทั่วไป','รพ.ชุมชน','สถาบัน/เฉพาะทาง','เอกชน/คลินิก']
 
-# --- 77 จังหวัด + ภูมิภาค ---
+# -------- 77 จังหวัด + ภูมิภาค --------
 TH_PROVINCES = {
-    # ภาคกลาง
-    'กรุงเทพมหานคร': 'ภาคกลาง','นนทบุรี': 'ภาคกลาง','ปทุมธานี': 'ภาคกลาง','พระนครศรีอยุธยา': 'ภาคกลาง',
-    'อ่างทอง': 'ภาคกลาง','ลพบุรี': 'ภาคกลาง','สิงห์บุรี': 'ภาคกลาง','ชัยนาท': 'ภาคกลาง','สระบุรี': 'ภาคกลาง',
-    'นครปฐม': 'ภาคกลาง','สมุทรสาคร': 'ภาคกลาง','สมุทรสงคราม': 'ภาคกลาง','สุพรรณบุรี': 'ภาคกลาง','สมุทรปราการ': 'ภาคกลาง',
-    'นครนายก': 'ภาคกลาง',
-    # ภาคตะวันออก
-    'ชลบุรี': 'ภาคตะวันออก','ระยอง': 'ภาคตะวันออก','จันทบุรี': 'ภาคตะวันออก','ตราด': 'ภาคตะวันออก',
-    'ฉะเชิงเทรา': 'ภาคตะวันออก','ปราจีนบุรี': 'ภาคตะวันออก','สระแก้ว': 'ภาคตะวันออก',
-    # ภาคตะวันตก
-    'กาญจนบุรี': 'ภาคตะวันตก','ตาก': 'ภาคตะวันตก','ราชบุรี': 'ภาคตะวันตก','เพชรบุรี': 'ภาคตะวันตก','ประจวบคีรีขันธ์': 'ภาคตะวันตก',
-    # ภาคเหนือ
-    'เชียงใหม่': 'ภาคเหนือ','เชียงราย': 'ภาคเหนือ','ลำปาง': 'ภาคเหนือ','ลำพูน': 'ภาคเหนือ','พะเยา': 'ภาคเหนือ','แพร่': 'ภาคเหนือ',
-    'น่าน': 'ภาคเหนือ','แม่ฮ่องสอน': 'ภาคเหนือ','อุตรดิตถ์': 'ภาคเหนือ','สุโขทัย': 'ภาคเหนือ','พิษณุโลก': 'ภาคเหนือ',
-    'พิจิตร': 'ภาคเหนือ','กำแพงเพชร': 'ภาคเหนือ','เพชรบูรณ์': 'ภาคเหนือ','นครสวรรค์': 'ภาคเหนือ','อุทัยธานี': 'ภาคเหนือ',
-    # ภาคอีสาน
-    'เลย': 'ภาคอีสาน','หนองคาย': 'ภาคอีสาน','บึงกาฬ': 'ภาคอีสาน','หนองบัวลำภู': 'ภาคอีสาน','อุดรธานี': 'ภาคอีสาน',
-    'สกลนคร': 'ภาคอีสาน','นครพนม': 'ภาคอีสาน','กาฬสินธุ์': 'ภาคอีสาน','มุกดาหาร': 'ภาคอีสาน','ขอนแก่น': 'ภาคอีสาน',
-    'ชัยภูมิ': 'ภาคอีสาน','นครราชสีมา': 'ภาคอีสาน','บุรีรัมย์': 'ภาคอีสาน','สุรินทร์': 'ภาคอีสาน','ศรีสะเกษ': 'ภาคอีสาน',
-    'อุบลราชธานี': 'ภาคอีสาน','ยโสธร': 'ภาคอีสาน','อำนาจเจริญ': 'ภาคอีสาน','มหาสารคาม': 'ภาคอีสาน','ร้อยเอ็ด': 'ภาคอีสาน',
-    # ภาคใต้
-    'ชุมพร': 'ภาคใต้','ระนอง': 'ภาคใต้','สุราษฎร์ธานี': 'ภาคใต้','พังงา': 'ภาคใต้','ภูเก็ต': 'ภาคใต้','กระบี่': 'ภาคใต้',
-    'ตรัง': 'ภาคใต้','พัทลุง': 'ภาคใต้','นครศรีธรรมราช': 'ภาคใต้','สงขลา': 'ภาคใต้','สตูล': 'ภาคใต้','ปัตตานี': 'ภาคใต้',
-    'ยะลา': 'ภาคใต้','นราธิวาส': 'ภาคใต้',
+    'กรุงเทพมหานคร':'ภาคกลาง','นนทบุรี':'ภาคกลาง','ปทุมธานี':'ภาคกลาง','พระนครศรีอยุธยา':'ภาคกลาง',
+    'อ่างทอง':'ภาคกลาง','ลพบุรี':'ภาคกลาง','สิงห์บุรี':'ภาคกลาง','ชัยนาท':'ภาคกลาง','สระบุรี':'ภาคกลาง',
+    'นครปฐม':'ภาคกลาง','สมุทรสาคร':'ภาคกลาง','สมุทรสงคราม':'ภาคกลาง','สุพรรณบุรี':'ภาคกลาง','สมุทรปราการ':'ภาคกลาง',
+    'นครนายก':'ภาคกลาง',
+    'ชลบุรี':'ภาคตะวันออก','ระยอง':'ภาคตะวันออก','จันทบุรี':'ภาคตะวันออก','ตราด':'ภาคตะวันออก',
+    'ฉะเชิงเทรา':'ภาคตะวันออก','ปราจีนบุรี':'ภาคตะวันออก','สระแก้ว':'ภาคตะวันออก',
+    'กาญจนบุรี':'ภาคตะวันตก','ตาก':'ภาคตะวันตก','ราชบุรี':'ภาคตะวันตก','เพชรบุรี':'ภาคตะวันตก','ประจวบคีรีขันธ์':'ภาคตะวันตก',
+    'เชียงใหม่':'ภาคเหนือ','เชียงราย':'ภาคเหนือ','ลำปาง':'ภาคเหนือ','ลำพูน':'ภาคเหนือ','พะเยา':'ภาคเหนือ','แพร่':'ภาคเหนือ',
+    'น่าน':'ภาคเหนือ','แม่ฮ่องสอน':'ภาคเหนือ','อุตรดิตถ์':'ภาคเหนือ','สุโขทัย':'ภาคเหนือ','พิษณุโลก':'ภาคเหนือ',
+    'พิจิตร':'ภาคเหนือ','กำแพงเพชร':'ภาคเหนือ','เพชรบูรณ์':'ภาคเหนือ','นครสวรรค์':'ภาคเหนือ','อุทัยธานี':'ภาคเหนือ',
+    'เลย':'ภาคอีสาน','หนองคาย':'ภาคอีสาน','บึงกาฬ':'ภาคอีสาน','หนองบัวลำภู':'ภาคอีสาน','อุดรธานี':'ภาคอีสาน',
+    'สกลนคร':'ภาคอีสาน','นครพนม':'ภาคอีสาน','กาฬสินธุ์':'ภาคอีสาน','มุกดาหาร':'ภาคอีสาน','ขอนแก่น':'ภาคอีสาน',
+    'ชัยภูมิ':'ภาคอีสาน','นครราชสีมา':'ภาคอีสาน','บุรีรัมย์':'ภาคอีสาน','สุรินทร์':'ภาคอีสาน','ศรีสะเกษ':'ภาคอีสาน',
+    'อุบลราชธานี':'ภาคอีสาน','ยโสธร':'ภาคอีสาน','อำนาจเจริญ':'ภาคอีสาน','มหาสารคาม':'ภาคอีสาน','ร้อยเอ็ด':'ภาคอีสาน',
+    'ชุมพร':'ภาคใต้','ระนอง':'ภาคใต้','สุราษฎร์ธานี':'ภาคใต้','พังงา':'ภาคใต้','ภูเก็ต':'ภาคใต้','กระบี่':'ภาคใต้',
+    'ตรัง':'ภาคใต้','พัทลุง':'ภาคใต้','นครศรีธรรมราช':'ภาคใต้','สงขลา':'ภาคใต้','สตูล':'ภาคใต้','ปัตตานี':'ภาคใต้',
+    'ยะลา':'ภาคใต้','นราธิวาส':'ภาคใต้',
 }
 
 # ---------------- Supabase ----------------
@@ -69,7 +68,7 @@ def get_client() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 sb: Client = get_client()
 
-# ---------------- Helpers ----------------
+# ---------------- Utilities ----------------
 def hash_pw(pw: str) -> str: return bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
 def verify_pw(pw: str, hashed: str) -> bool:
     try: return bcrypt.checkpw(pw.encode(), hashed.encode())
@@ -93,10 +92,12 @@ def ensure_default_admin():
     try:
         rows = sb.table('admins').select('username').eq('username','telemed').execute().data
         if not rows:
-            sb.table('admins').insert({'id':str(uuid.uuid4()),
-                                       'username':'telemed',
-                                       'password_hash':hash_pw('Telemed@DHI'),
-                                       'role':'admin'}).execute()
+            sb.table('admins').insert({
+                'id':str(uuid.uuid4()),
+                'username':'telemed',
+                'password_hash':hash_pw('Telemed@DHI'),
+                'role':'admin'
+            }).execute()
     except Exception:
         pass
 ensure_default_admin()
@@ -129,12 +130,10 @@ def delete_master(table: str, name: str):
     except Exception:
         st.warning(f'⚠️ ลบใน {table} ไม่สำเร็จ')
 
-# ---------- Export helpers ----------
 def df_to_excel_bytes(sheets: Dict[str, pd.DataFrame]) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         for sheet_name, df in sheets.items():
-            # Coerce dates nicely
             df2 = df.copy()
             for c in df2.columns:
                 if pd.api.types.is_datetime64_any_dtype(df2[c]):
@@ -142,13 +141,12 @@ def df_to_excel_bytes(sheets: Dict[str, pd.DataFrame]) -> bytes:
             df2.to_excel(writer, sheet_name=sheet_name[:31], index=False)
     return output.getvalue()
 
-# ---------- Plotly wrapper (unique key) ----------
 def plot(fig, key: str, config: dict | None = None):
     base = {'displaylogo': False, 'scrollZoom': True}
     if config: base.update(config)
     st.plotly_chart(fig, use_container_width=True, config=base, key=key)
 
-# ---------- UI / Theme ----------
+# ---------------- Theme/UI ----------------
 if 'ui' not in st.session_state: st.session_state['ui']={'dark': False}
 with st.sidebar:
     st.markdown('### 🎨 การแสดงผล')
@@ -179,7 +177,6 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 def apply_ui_patches():
-    # Hide weird labels like "keboard"
     st.components.v1.html("""
     <script>
       setTimeout(()=>{
@@ -220,7 +217,7 @@ with st.sidebar:
     if nav != page:
         st.query_params.update({'page':nav}); rerun()
 
-# ---------------- Thai date format ----------------
+# ---------------- Thai date ----------------
 TH_MONTHS = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.","ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."]
 def th_date(d: date) -> str:
     return f"{d.day} {TH_MONTHS[d.month-1]} {d.year+543}"
@@ -268,7 +265,7 @@ def render_dashboard():
     hospitals_df = load_df('hospitals')
     tx_df = load_df('transactions')
 
-    # ---------- Filters area ----------
+    # ---------- Filters ----------
     st.markdown("### 🎛️ ตัวกรอง")
     if 'date_range' not in st.session_state:
         today = date.today()
@@ -298,7 +295,6 @@ def render_dashboard():
                     st.session_state[k] = []
                 rerun()
 
-        # Row 2: dropdowns (โรงพยาบาล / ทีม / ภูมิภาค / ประเภท)
         c_row2_a, c_row2_b, c_row2_c, c_row2_d = st.columns([1.4,1.1,1.1,1.2])
         with c_row2_a:
             all_names = sorted(hospitals_df['name'].dropna().unique().tolist()) if 'name' in hospitals_df.columns else []
@@ -314,7 +310,7 @@ def render_dashboard():
             selected_types = multiselect_dropdown("🏷️ ประเภทโรงพยาบาล", types, "type_filter", default_all=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # ---- Capture whole page ----
+    # ---- Screenshot button ----
     cap_col = st.columns([1,3,1])[0]
     with cap_col:
         if st.button('📸 แคปหน้าจอ (PNG)'):
@@ -330,7 +326,6 @@ def render_dashboard():
                  const a=document.createElement('a');
                  a.download=`telemed-dashboard-${new Date().toISOString().slice(0,10)}.png`;
                  a.href=data; document.body.appendChild(a); a.click(); a.remove();
-                 // Fallback: open new tab so user can Save As...
                  const w=window.open(); if(w){ w.document.write('<title>Dashboard Capture</title>');
                    const img=new Image(); img.src=data; img.style='width:100%'; w.document.body.appendChild(img); }
               });
@@ -350,7 +345,6 @@ def render_dashboard():
         df = pd.DataFrame(columns=['date','hospital_id','transactions_count','riders_active',
                                    'name','site_control','region','riders_count','hospital_type'])
 
-    # ---- Safe filters ----
     if st.session_state.get('site_filter') and 'site_control' in df.columns:
         df = df[df['site_control'].isin(st.session_state['site_filter'])]
     if st.session_state.get('hosp_sel') and 'name' in df.columns:
@@ -443,7 +437,6 @@ def render_dashboard():
                                 height=max(420, 50*len(gtype_for_bar)+180))
             plot(bar_t, key="bar_hospital_type")
 
-        # Table by type
         st.markdown('#### ตารางสรุปตามประเภทโรงพยาบาล')
         show_tbl = gtype_sum.rename(columns={
             'hospital_type': 'ประเภท',
@@ -488,11 +481,11 @@ def render_dashboard():
     else:
         render_chart_placeholder('#### สัดส่วน/ภาพรวมตามประเภทโรงพยาบาล', key="ph_type_summary")
 
-    # ---- Hospital Overview (sortable) ----
+    # ---- Hospital Overview ----
     st.markdown('#### ภาพรวมต่อโรงพยาบาล')
     if not df.empty:
         gh = df.groupby('name').agg({'transactions_count':'sum'}).reset_index()
-        cs1, cs2, ec = st.columns([1.3, 1.2, 3])
+        cs1, cs2, _ = st.columns([1.3, 1.2, 3])
         with cs1:
             sort_by = st.selectbox('เรียงตาม', ['ยอด Transaction','ชื่อโรงพยาบาล'], index=0)
         with cs2:
@@ -518,7 +511,7 @@ def render_dashboard():
     else:
         render_chart_placeholder('#### ภาพรวมต่อโรงพยาบาล', key="ph_hospital_overview")
 
-    # ---- Daily Trend (curved line) ----
+    # ---- Daily Trend ----
     st.markdown('#### แนวโน้มรายวัน')
     if not df.empty:
         daily = df.groupby('date').agg({'transactions_count':'sum','riders_active':'sum'}).reset_index().sort_values('date')
@@ -551,7 +544,7 @@ def render_dashboard():
     else:
         render_chart_placeholder('#### แนวโน้มรายวัน', key="ph_daily_trend")
 
-    # ---- Table by site (Plotly Table) ----
+    # ---- Table by site ----
     st.markdown('#### ตารางจำนวน Transaction แยกตามทีมภูมิภาค')
     if not df.empty:
         site_tbl = df.groupby('site_control').agg(
@@ -596,10 +589,9 @@ def render_dashboard():
     else:
         st.info('ไม่มีข้อมูลตารางในช่วงที่เลือก')
 
-    # ---- Export zone ----
+    # ---- Export ----
     st.markdown("### ⬇️ ส่งออกข้อมูลที่กรองแล้ว")
     if not df.empty:
-        # prepare DataFrames
         df_csv = df.copy()
         df_csv['date'] = pd.to_datetime(df_csv['date'])
         gh = df.groupby('name').agg({'transactions_count':'sum'}).reset_index()
@@ -608,7 +600,6 @@ def render_dashboard():
 
         cdl1, cdl2 = st.columns(2)
         with cdl1:
-            # CSV (filtered raw)
             st.download_button(
                 "ดาวน์โหลด CSV (ข้อมูลที่กรองแล้ว)",
                 data=df_csv.to_csv(index=False).encode('utf-8-sig'),
@@ -616,7 +607,6 @@ def render_dashboard():
                 mime="text/csv"
             )
         with cdl2:
-            # Excel (multi-sheet)
             xbytes = df_to_excel_bytes({
                 "filtered": df_csv,
                 "by_hospital": gh,
@@ -652,8 +642,7 @@ def render_admin():
         model_choices = get_master_names('service_models_master', DEFAULT_SERVICE_MODELS)
 
         with st.expander('➕ เพิ่ม/แก้ไข โรงพยาบาล', expanded=False):
-            if not can_edit:
-                st.info('สิทธิ์ viewer: อ่านอย่างเดียว'); 
+            if not can_edit: st.info('สิทธิ์ viewer: อ่านอย่างเดียว')
             edit_mode = st.checkbox('แก้ไขรายการที่มีอยู่', value=False, disabled=not can_edit)
             if edit_mode and not hospitals_df.empty:
                 sel = st.selectbox('เลือกโรงพยาบาล', hospitals_df.get('name', pd.Series(dtype=str)).tolist(), disabled=not can_edit)
@@ -746,32 +735,22 @@ def render_admin():
                     if st.button('บันทึก Transaction', key='add_tx_btn', disabled=not can_edit):
                         hid = name2id[hname]
                         try:
-                            existed = sb.table('transactions').select('id').eq('hospital_id', hid).eq('date', tx_date.isoformat()).limit(1).execute().data
-                            if existed:
-                                st.warning('ข้อมูลวันที่นี้ของโรงพยาบาลนี้มีอยู่แล้ว กรุณาไป **แก้ไขรายการเดิม** หรือ **ยกเลิก**')
-                                g1, g2 = st.columns(2)
-                                with g1:
-                                    if st.button('➡️ ไปหน้าแก้ไขรายการนี้', key='go_edit_dup'):
-                                        st.session_state['edit_target_h'] = hname
-                                        st.session_state['edit_target_d'] = tx_date
-                                        st.session_state['force_edit_reset'] = True
-                                        st.session_state['open_add_tx'] = False
-                                        st.session_state['open_edit_tx'] = True
-                                        rerun()
-                                with g2:
-                                    if st.button('ยกเลิก', key='cancel_dup'):
-                                        st.session_state['open_add_tx'] = False
-                                        rerun()
-                                st.stop()
+                            # กันซ้ำด้วย upsert (hospital_id+date)
                             rc_series = hospitals_df.loc[hospitals_df['id']==hid,'riders_count']
                             rc = int(rc_series.iloc[0]) if not rc_series.empty else 0
                             if riders_active > rc:
                                 st.error('Rider Active มากกว่า Capacity'); st.stop()
-                            sb.table('transactions').insert({
-                                'id':str(uuid.uuid4()),'hospital_id':hid,'date':tx_date.isoformat(),
-                                'transactions_count':int(tx_num),'riders_active':int(riders_active)
-                            }).execute()
-                            st.success('เพิ่มข้อมูลแล้ว'); load_df.clear(); rerun()
+                            sb.table('transactions').upsert(
+                                {
+                                  'hospital_id':hid,
+                                  'date':tx_date.isoformat(),
+                                  'transactions_count':int(tx_num),
+                                  'riders_active':int(riders_active),
+                                  'created_at': datetime.now().isoformat()
+                                },
+                                on_conflict=['hospital_id','date']
+                            ).execute()
+                            st.success('เพิ่ม/อัปเดตข้อมูลแล้ว'); load_df.clear(); rerun()
                         except Exception:
                             st.error('บันทึกไม่สำเร็จ')
                 with cbtn2:
@@ -783,7 +762,6 @@ def render_admin():
             with st.expander('📥 นำเข้า CSV (hospital_name,date,transactions_count,riders_active)'):
                 up = st.file_uploader('เลือกไฟล์ CSV', type=['csv'], disabled=not can_edit)
                 auto_create = st.checkbox('สร้างโรงพยาบาลอัตโนมัติถ้าไม่พบ', value=False, disabled=not can_edit)
-                mode = st.selectbox('โหมดซ้ำ (hospital+date)', ['ข้าม','อัปเดต'], index=1, disabled=not can_edit)
                 if up is not None and can_edit:
                     try:
                         df_imp = pd.read_csv(up)
@@ -791,14 +769,11 @@ def render_admin():
                         if not required.issubset(set(df_imp.columns)):
                             st.error(f'คอลัมน์ต้องมี: {required}')
                         else:
-                            rows_to_insert = []
-                            rows_to_update = []
                             for _, r in df_imp.iterrows():
                                 hname = str(r['hospital_name']).strip()
                                 dt = pd.to_datetime(r['date']).date()
                                 tx = int(r['transactions_count'])
                                 ra = int(r['riders_active'])
-                                # map hospital
                                 hid = name2id.get(hname)
                                 if not hid and auto_create:
                                     hid = str(uuid.uuid4())
@@ -809,21 +784,18 @@ def render_admin():
                                 if not hid: 
                                     st.warning(f'ข้าม: ไม่พบโรงพยาบาล {hname}'); 
                                     continue
-                                # check duplicate
-                                ex = sb.table('transactions').select('id').eq('hospital_id',hid).eq('date', dt.isoformat()).limit(1).execute().data
-                                if ex:
-                                    if mode=='อัปเดต':
-                                        rows_to_update.append({'id':ex[0]['id'],'transactions_count':tx,'riders_active':ra})
-                                else:
-                                    rows_to_insert.append({'id':str(uuid.uuid4()),'hospital_id':hid,'date':dt.isoformat(),
-                                                           'transactions_count':tx,'riders_active':ra})
-                            if rows_to_insert:
-                                sb.table('transactions').insert(rows_to_insert).execute()
-                            if rows_to_update:
-                                for r in rows_to_update:
-                                    sb.table('transactions').update({'transactions_count':r['transactions_count'],'riders_active':r['riders_active']}).eq('id',r['id']).execute()
-                            st.success(f'นำเข้าแล้ว: เพิ่ม {len(rows_to_insert)} อัปเดต {len(rows_to_update)}'); load_df.clear(); rerun()
-                    except Exception as e:
+                                sb.table('transactions').upsert(
+                                    {
+                                      'hospital_id':hid,
+                                      'date':dt.isoformat(),
+                                      'transactions_count':tx,
+                                      'riders_active':ra,
+                                      'created_at': datetime.now().isoformat()
+                                    },
+                                    on_conflict=['hospital_id','date']
+                                ).execute()
+                            st.success('นำเข้าเสร็จสิ้น'); load_df.clear(); rerun()
+                    except Exception:
                         st.error('นำเข้าไม่สำเร็จ')
 
             # Edit under Add
@@ -1002,12 +974,10 @@ def render_admin():
     # ---- Reports ----
     with tabs[4]:
         st.markdown("### รายงานสรุปรายเดือน")
-        # Month picker: use first day-of-month
         today = date.today()
         ym = st.date_input('เลือกเดือน', value=date(today.year, today.month, 1))
         start = ym.replace(day=1)
-        end = (start.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)  # last day of month
-        st.caption(f"ช่วงรายงาน: {start.isoformat()} ถึง {end.isoformat()}")
+        end = (start.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
 
         hospitals_df = load_df('hospitals')
         tx_df = load_df('transactions')
@@ -1028,7 +998,6 @@ def render_admin():
             st.dataframe(by_hosp.rename(columns={'name':'โรงพยาบาล','transactions':'Transactions','ra':'Rider Active'}),
                          use_container_width=True, height=300)
 
-            # Export Excel
             ebytes = df_to_excel_bytes({
                 f"{start.strftime('%Y-%m')}_by_hospital": by_hosp,
                 f"{start.strftime('%Y-%m')}_by_site": by_site,
@@ -1038,7 +1007,6 @@ def render_admin():
                                file_name=f"telemed_monthly_{start.strftime('%Y_%m')}.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-            # Send LINE Notify
             settings_df = load_df('settings')
             def get_setting(key, default):
                 try:
@@ -1141,7 +1109,8 @@ def render_admin():
                 for n,hid in name2id.items():
                     for d in days:
                         rows.append({'id':str(uuid.uuid4()),'hospital_id':hid,'date':d.isoformat(),
-                                     'transactions_count':random.randint(20,60),'riders_active':random.randint(2,7)})
+                                     'transactions_count':random.randint(20,60),'riders_active':random.randint(2,7),
+                                     'created_at': datetime.now().isoformat()})
                 if rows:
                     try: sb.table('transactions').insert(rows).execute(); st.success('เติมข้อมูลแล้ว'); load_df.clear(); rerun()
                     except Exception: st.error('เติมข้อมูลไม่สำเร็จ')
