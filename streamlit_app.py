@@ -1,10 +1,11 @@
-# DashBoard Telemedicine — v4.7.1 (Full)
-# อัปเดตจาก v4.6.x:
-# - ปุ่ม "📸 ดาวน์โหลดภาพ PNG" และ "⬇️ ส่งออกข้อมูล" ย้ายไป Sidebar
-# - ตัวกรองวันที่แสดงรูปแบบ DD/MM/YYYY
-# - ลดช่องว่างด้านบนของหน้า
-# - ย้าย "แนวโน้มรายวัน" มาอยู่ระหว่าง "ตามทีม (วงกลม)" กับ "ประเภทโรงพยาบาล (สรุป)"
-# - รวมโค้ด Admin ครบทุกแท็บ
+# DashBoard Telemedicine — v4.8.0 (Full, with Filter Card & Sticky)
+# - Sidebar: PNG/CSV/Excel download
+# - Thai date (DD/MM/YYYY) date inputs
+# - Filter card (expander + sticky)
+# - Reduced top spacing
+# - Daily trend positioned between pie(site) and hospital type section
+# - Complete Admin console
+# NOTE: Requires requirements.txt with: streamlit, supabase, pandas, plotly, kaleido, pillow, bcrypt, openpyxl, requests
 
 import os, uuid, json, bcrypt, requests, random, io
 import pandas as pd
@@ -17,7 +18,7 @@ from typing import List, Dict
 import streamlit as st
 from supabase import create_client, Client
 
-APP_VERSION = "v4.7.1"
+APP_VERSION = "v4.8.0"
 
 # ---------------- Page / Theme ----------------
 st.set_page_config(page_title="DashBoard Telemedicine", page_icon="📊", layout="wide")
@@ -144,16 +145,13 @@ def plot(fig, key: str, config: dict | None = None):
 
 # -------- PNG Builder (Server-side) --------
 def build_dashboard_png(figs: dict, title: str, subtitle: str, dark: bool=False) -> bytes:
-    """รวมกราฟหลายอันให้เป็นภาพ PNG เดียวแบบยาว"""
     images = []
-    order = ['pie_sitecontrol','line_daily_trend',  # แนวโน้มรายวันอยู่ตรงนี้
-             'pie_hospital_type','bar_hospital_type',
-             'bar_hospital_overview']
+    order = ['pie_sitecontrol','line_daily_trend','pie_hospital_type','bar_hospital_type','bar_hospital_overview']
     for k in order:
         fig = figs.get(k)
         if fig is not None:
             try:
-                img_bytes = pio.to_image(fig, format="png", scale=2)  # ต้องมี kaleido
+                img_bytes = pio.to_image(fig, format="png", scale=2)  # need kaleido
                 images.append(Image.open(io.BytesIO(img_bytes)))
             except Exception:
                 pass
@@ -203,7 +201,7 @@ CARD_BG = "#0b1220" if DARK else "#FFFFFF"
 CARD_BORDER = "#1f2937" if DARK else "#E5E7EB"
 CARD_TXT = "#E5E7EB" if DARK else "#334155"
 
-# ลดช่องว่างด้านบน-ล่าง
+# ---- CSS ----
 st.markdown(f"""
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@400;600&display=swap');
@@ -250,7 +248,6 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-
 def apply_ui_patches():
     st.components.v1.html("""
     <script>
@@ -274,7 +271,7 @@ with st.sidebar:
             rows = load_df('admins')
             if st.form_submit_button('Login'):
                 row = rows[rows['username']==u] if 'username' in rows.columns else pd.DataFrame()
-                if not row.empty and verify_pw(p, row.iloc[0]['password_hash']):
+                if not row.empty and (p and bcrypt.checkpw(p.encode(), row.iloc[0]['password_hash'].encode())):
                     role = row.iloc[0]['role'] if 'role' in row.columns and pd.notna(row.iloc[0]['role']) else 'admin'
                     st.session_state.auth={'ok':True,'user':u,'role':role}; rerun()
                 else:
@@ -292,7 +289,7 @@ with st.sidebar:
     if nav != page:
         st.query_params.update({'page':nav}); rerun()
 
-# container สำหรับปุ่มดาวน์โหลด/ส่งออกใน Sidebar (จะเติมตอน render เสร็จ)
+# container ปุ่มดาวน์โหลด/ส่งออกใน Sidebar
 with st.sidebar:
     sidebar_dl_container = st.container()
 
@@ -343,69 +340,56 @@ def render_dashboard():
 
     hospitals_df = load_df('hospitals')
     tx_df = load_df('transactions')
+    figs: Dict[str, go.Figure] = {}
 
-    figs: Dict[str, go.Figure] = {}  # เก็บกราฟไว้สำหรับทำ PNG
-
-    # ---------- Filters ----------
-   # ---------- Filters ----------
-st.markdown("### 🎛️ ตัวกรอง")
-
-if 'date_range' not in st.session_state:
-    today = date.today()
-    st.session_state['date_range'] = (today, today)
-
-# กล่องตัวกรองแบบย่อ/ขยาย + sticky
-st.markdown("<div class='filter-sticky'>", unsafe_allow_html=True)
-with st.expander("🎛️ ตัวกรองข้อมูล (คลิกเพื่อย่อ/ขยาย)", expanded=True):
-    st.markdown("<div class='filter-card'>", unsafe_allow_html=True)
-
-    # แถวที่ 1: วันที่ + ปุ่มลัด
-    r1c1, r1c2, r1c3 = st.columns([2, 1.2, 1.2])
-    with r1c1:
+    # ---------- Filters (card + sticky) ----------
+    st.markdown("### 🎛️ ตัวกรอง")
+    if 'date_range' not in st.session_state:
         today = date.today()
-        dr = st.date_input('📅 ช่วงวันที่', value=st.session_state['date_range'], format="DD/MM/YYYY")
-        if isinstance(dr, tuple) and len(dr)==2:
-            st.session_state['date_range'] = dr
-    with r1c2:
-        cA, cB = st.columns(2)
-        with cA:
-            if st.button('Today', use_container_width=True):
-                st.session_state['date_range'] = (today, today); rerun()
-        with cB:
-            if st.button('เดือนนี้', use_container_width=True):
-                first = today.replace(day=1)
-                st.session_state['date_range'] = (first, today); rerun()
-    with r1c3:
-        if st.button('↺ Reset ตัวกรอง', use_container_width=True):
-            st.session_state['date_range'] = (today, today)
-            for k in ['hosp_sel','site_filter','region_filter','type_filter']:
-                st.session_state[k] = []
-            rerun()
+        st.session_state['date_range'] = (today, today)
 
-    # แถวที่ 2: dropdowns (โรงพยาบาล/ทีม/ภูมิภาค/ประเภท)
-    r2a, r2b, r2c, r2d = st.columns([1.6, 1.2, 1.2, 1.4])
+    st.markdown("<div class='filter-sticky'>", unsafe_allow_html=True)
+    with st.expander("🎛️ ตัวกรองข้อมูล (คลิกเพื่อย่อ/ขยาย)", expanded=True):
+        st.markdown("<div class='filter-card'>", unsafe_allow_html=True)
 
-    with r2a:
-        all_names = sorted(hospitals_df['name'].dropna().unique().tolist()) if 'name' in hospitals_df.columns else []
-        selected_hospitals = multiselect_dropdown("🏥 โรงพยาบาล", all_names, "hosp_sel", default_all=True)
+        r1c1, r1c2, r1c3 = st.columns([2, 1.2, 1.2])
+        with r1c1:
+            today = date.today()
+            dr = st.date_input('📅 ช่วงวันที่', value=st.session_state['date_range'], format="DD/MM/YYYY")
+            if isinstance(dr, tuple) and len(dr)==2:
+                st.session_state['date_range'] = dr
+        with r1c2:
+            cA, cB = st.columns(2)
+            with cA:
+                if st.button('Today', use_container_width=True):
+                    st.session_state['date_range'] = (today, today); rerun()
+            with cB:
+                if st.button('เดือนนี้', use_container_width=True):
+                    first = today.replace(day=1)
+                    st.session_state['date_range'] = (first, today); rerun()
+        with r1c3:
+            if st.button('↺ Reset ตัวกรอง', use_container_width=True):
+                st.session_state['date_range'] = (today, today)
+                for k in ['hosp_sel','site_filter','region_filter','type_filter']:
+                    st.session_state[k] = []
+                rerun()
 
-    with r2b:
-        selected_sites = multiselect_dropdown("🧭 ทีมภูมิภาค", SITE_CONTROL_CHOICES, "site_filter", default_all=True)
+        r2a, r2b, r2c, r2d = st.columns([1.6, 1.2, 1.2, 1.4])
+        with r2a:
+            all_names = sorted(hospitals_df['name'].dropna().unique().tolist()) if 'name' in hospitals_df.columns else []
+            selected_hospitals = multiselect_dropdown("🏥 โรงพยาบาล", all_names, "hosp_sel", default_all=True)
+        with r2b:
+            selected_sites = multiselect_dropdown("🧭 ทีมภูมิภาค", SITE_CONTROL_CHOICES, "site_filter", default_all=True)
+        with r2c:
+            regions = sorted(hospitals_df['region'].dropna().unique().tolist()) if 'region' in hospitals_df.columns else []
+            selected_regions = multiselect_dropdown("🗺️ ภูมิภาค", regions, "region_filter", default_all=True)
+        with r2d:
+            types = sorted(hospitals_df['hospital_type'].dropna().unique().tolist()) if 'hospital_type' in hospitals_df.columns \
+                    else get_master_names('hospital_types', DEFAULT_HOSPITAL_TYPES)
+            selected_types = multiselect_dropdown("🏷️ ประเภทโรงพยาบาล", types, "type_filter", default_all=True)
 
-    with r2c:
-        regions = sorted(hospitals_df['region'].dropna().unique().tolist()) if 'region' in hospitals_df.columns else []
-        selected_regions = multiselect_dropdown("🗺️ ภูมิภาค", regions, "region_filter", default_all=True)
-
-    with r2d:
-        types = sorted(hospitals_df['hospital_type'].dropna().unique().tolist()) if 'hospital_type' in hospitals_df.columns \
-                else get_master_names('hospital_types', DEFAULT_HOSPITAL_TYPES)
-        selected_types = multiselect_dropdown("🏷️ ประเภทโรงพยาบาล", types, "type_filter", default_all=True)
-
-    st.markdown("</div>", unsafe_allow_html=True)  # /filter-card
-st.markdown("</div>", unsafe_allow_html=True)      # /filter-sticky
-
-start_date, end_date = st.session_state['date_range']
-
+        st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     start_date, end_date = st.session_state['date_range']
 
@@ -464,7 +448,7 @@ start_date, end_date = st.session_state['date_range']
     else:
         render_chart_placeholder('#### จำนวน Transaction ตามทีมภูมิภาค (กราฟวงกลม)', key="ph_site_pie")
 
-    # ---- Daily Trend (ย้ายมาอยู่ตรงนี้) ----
+    # ---- Daily Trend ----
     st.markdown('#### แนวโน้มรายวัน')
     if not df.empty:
         daily = df.groupby('date').agg({'transactions_count':'sum','riders_active':'sum'}).reset_index().sort_values('date')
@@ -626,16 +610,15 @@ start_date, end_date = st.session_state['date_range']
     else:
         st.info('ไม่มีข้อมูลตารางในช่วงที่เลือก')
 
-    # ===== เตรียมข้อมูลดาวน์โหลด/ส่งออกสำหรับ Sidebar =====
+    # ===== Prepare downloads =====
     subtitle = (
         f"ช่วง {th_date(start_date)} – {th_date(end_date)}  |  "
         f"โรงพยาบาล: "
-        f"{'ทั้งหมด' if not selected_hospitals or len(selected_hospitals)==len(all_names) else ', '.join(selected_hospitals)}  |  "
-        f"ทีม: {'ทั้งหมด' if not selected_sites or len(selected_sites)==len(SITE_CONTROL_CHOICES) else ', '.join(selected_sites)}"
+        f"{'ทั้งหมด' if not st.session_state.get('hosp_sel') or len(st.session_state['hosp_sel'])==len(all_names) else ', '.join(st.session_state['hosp_sel'])}  |  "
+        f"ทีม: {'ทั้งหมด' if not st.session_state.get('site_filter') or len(st.session_state['site_filter'])==len(SITE_CONTROL_CHOICES) else ', '.join(st.session_state['site_filter'])}"
     )
     png_bytes = build_dashboard_png(figs, "DashBoard Telemedicine", subtitle, dark=DARK)
 
-    # เตรียม CSV/Excel export
     if not df.empty:
         df_csv = df.copy()
         df_csv['date'] = pd.to_datetime(df_csv['date'])
@@ -647,14 +630,13 @@ start_date, end_date = st.session_state['date_range']
         df_csv = pd.DataFrame()
         excel_bytes = b""
 
-    # เก็บไว้ใน session เพื่อไปวาดปุ่มใน Sidebar
     st.session_state['downloads'] = {
         'png_bytes': png_bytes,
         'csv_bytes': (df_csv.to_csv(index=False).encode('utf-8-sig') if not df_csv.empty else b""),
         'excel_bytes': excel_bytes
     }
 
-# ====================== ADMIN (เต็ม) ======================
+# ====================== ADMIN (จัดการข้อมูล) ======================
 def render_admin():
     apply_ui_patches()
     if not st.session_state.auth['ok']:
