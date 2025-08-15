@@ -1,7 +1,6 @@
-# DashBoard Telemedicine — v4.4
-# - NEW: ตารางสรุปตามประเภทโรงพยาบาล (Hospitals, Tx, Rider Active, Riders Total, Avg Tx/Hosp)
-# - NEW: ตัวเลือกเรียงลำดับสำหรับกราฟ "ประเภทโรงพยาบาล" (ตามจำนวน Transaction / จำนวนโรงพยาบาล)
-# - คงทุกฟีเจอร์จาก v4.3 (Master Data, UI patches, Dark/Light, etc.)
+# DashBoard Telemedicine — v4.4.1
+# - FIX: StreamlitDuplicateElementId โดยกำหนด key ให้ทุก st.plotly_chart และ placeholder
+# - คงฟีเจอร์ v4.4 ทั้งหมด (กราฟ/ตารางตามประเภท, เรียงลำดับ, ตัวกรอง, Admin, ฯลฯ)
 
 import os, uuid, json, bcrypt, requests, random
 import pandas as pd
@@ -12,7 +11,7 @@ from typing import List
 import streamlit as st
 from supabase import create_client, Client
 
-APP_VERSION = "v4.4"
+APP_VERSION = "v4.4.1"
 
 # ---------------- App / Theme ----------------
 st.set_page_config(page_title="DashBoard Telemedicine", page_icon="📊", layout="wide")
@@ -123,6 +122,12 @@ def delete_master(table: str, name: str):
     except Exception:
         st.warning(f'⚠️ ลบใน {table} ไม่สำเร็จ')
 
+# ---------- Plotly wrapper (ใส่ key ให้ทุกชาร์ต) ----------
+def plot(fig, key: str, config: dict | None = None):
+    base = {'displaylogo': False, 'scrollZoom': True}
+    if config: base.update(config)
+    st.plotly_chart(fig, use_container_width=True, config=base, key=key)
+
 # UI State
 if 'ui' not in st.session_state: st.session_state['ui']={'dark': False}
 with st.sidebar:
@@ -154,7 +159,6 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 def apply_ui_patches():
-    # ซ่อนข้อความ icon หลุด เช่น 'keyboard_double_arrow_right' / 'keboard'
     st.components.v1.html("""
     <script>
       setTimeout(()=>{
@@ -225,13 +229,13 @@ def multiselect_dropdown(label: str, options: list, state_key: str, default_all:
     return st.session_state[state_key]
 
 # ====================== DASHBOARD ======================
-def render_chart_placeholder(title:str):
+def render_chart_placeholder(title:str, key:str):
     fig = go.Figure()
     fig.add_annotation(text="ไม่มีข้อมูล", x=0.5, y=0.5, showarrow=False, font=dict(size=16))
     fig.update_xaxes(visible=False); fig.update_yaxes(visible=False)
     fig.update_layout(height=360, margin=dict(l=0,r=0,t=10,b=10))
     st.markdown(title)
-    st.plotly_chart(fig, use_container_width=True, config={'displaylogo': False})
+    plot(fig, key=key)
 
 def render_dashboard():
     apply_ui_patches()
@@ -348,35 +352,30 @@ def render_dashboard():
                               marker=dict(line=dict(color=('#fff' if not DARK else '#111'), width=2)),
                               pull=[0.02]*len(gsite))
             pie.update_layout(annotations=[dict(text=f"{total_tx:,}<br>รวม", x=0.5, y=0.5, showarrow=False, font=dict(size=18))])
-            st.plotly_chart(pie, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})
+            plot(pie, key="pie_sitecontrol")
         else:
-            render_chart_placeholder('#### จำนวน Transaction ตามทีมภูมิภาค (กราฟวงกลม)')
+            render_chart_placeholder('#### จำนวน Transaction ตามทีมภูมิภาค (กราฟวงกลม)', key="ph_site_pie")
     else:
-        render_chart_placeholder('#### จำนวน Transaction ตามทีมภูมิภาค (กราฟวงกลม)')
+        render_chart_placeholder('#### จำนวน Transaction ตามทีมภูมิภาค (กราฟวงกลม)', key="ph_site_pie")
 
-    # ==== NEW: Charts & Table by Hospital Type ====
+    # ==== Charts & Table by Hospital Type ====
     st.markdown('### 🏷️ ประเภทโรงพยาบาล (สรุป)')
     if not df.empty and 'hospital_type' in df.columns and df['hospital_type'].notna().any():
-        # สรุปตามประเภท
         gtype_sum = df.groupby('hospital_type', dropna=True).agg(
             transactions_count=('transactions_count','sum'),
             riders_active=('riders_active','sum'),
             riders_total=('riders_count','sum'),
             hospitals_count=('hospital_id','nunique')
         ).reset_index()
-
-        # Avg Tx / Hosp (แสดงเป็นทศนิยม 1 ตำแหน่ง)
         gtype_sum['avg_tx_per_hosp'] = gtype_sum['transactions_count'] / gtype_sum['hospitals_count']
         gtype_sum = gtype_sum.sort_values('transactions_count', ascending=False)
 
-        # แถวควบคุมการเรียงลำดับสำหรับกราฟแท่งประเภท
         ui1, ui2, _ = st.columns([1.3, 1.1, 2.6])
         with ui1:
             sort_metric = st.selectbox('เรียงกราฟตาม', ['จำนวน Transaction','จำนวนโรงพยาบาล'], index=0, key='sort_metric_type')
         with ui2:
             sort_dir = st.selectbox('ทิศทาง', ['มาก→น้อย','น้อย→มาก'], index=0, key='sort_dir_type')
 
-        # กำหนด DataFrame สำหรับกราฟแท่ง (ตามคีย์เรียง)
         if sort_metric == 'จำนวนโรงพยาบาล':
             gtype_for_bar = gtype_sum.sort_values('hospitals_count', ascending=(sort_dir=='น้อย→มาก'))
         else:
@@ -392,7 +391,7 @@ def render_dashboard():
                                 marker=dict(line=dict(color=('#fff' if not DARK else '#111'), width=2)),
                                 pull=[0.02]*len(gtype_sum))
             pie_t.update_layout(annotations=[dict(text=f"{int(gtype_sum.transactions_count.sum()):,}<br>รวม", x=0.5, y=0.5, showarrow=False, font=dict(size=16))])
-            st.plotly_chart(pie_t, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})
+            plot(pie_t, key="pie_hospital_type")
 
         with c2:
             st.markdown('#### ภาพรวมตามประเภทโรงพยาบาล')
@@ -405,9 +404,9 @@ def render_dashboard():
             bar_t.update_layout(showlegend=False, margin=dict(l=160,r=40,t=30,b=30),
                                 yaxis_title='ประเภท', xaxis_title='Transactions',
                                 height=max(420, 50*len(gtype_for_bar)+180))
-            st.plotly_chart(bar_t, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})
+            plot(bar_t, key="bar_hospital_type")
 
-        # ---- ตารางสรุปตามประเภทโรงพยาบาล ----
+        # Table by type
         st.markdown('#### ตารางสรุปตามประเภทโรงพยาบาล')
         show_tbl = gtype_sum.rename(columns={
             'hospital_type': 'ประเภท',
@@ -417,8 +416,6 @@ def render_dashboard():
             'riders_total': 'Riders Total',
             'avg_tx_per_hosp': 'Avg Tx/รพ.'
         }).copy()
-
-        # จัดรูปแบบตัวเลข
         show_tbl['Hospitals'] = show_tbl['Hospitals'].map('{:,}'.format)
         show_tbl['Transactions'] = show_tbl['Transactions'].map('{:,}'.format)
         show_tbl['Rider Active'] = show_tbl['Rider Active'].map('{:,}'.format)
@@ -450,9 +447,9 @@ def render_dashboard():
             )
         )])
         figt2.update_layout(margin=dict(l=0,r=0,t=0,b=0))
-        st.plotly_chart(figt2, use_container_width=True, config={'displaylogo': False})
+        plot(figt2, key="tbl_hospital_type")
     else:
-        render_chart_placeholder('#### สัดส่วน/ภาพรวมตามประเภทโรงพยาบาล')
+        render_chart_placeholder('#### สัดส่วน/ภาพรวมตามประเภทโรงพยาบาล', key="ph_type_summary")
 
     # ---- Hospital Overview (sortable) ----
     if not df.empty:
@@ -480,9 +477,9 @@ def render_dashboard():
             yaxis_title='ชื่อโรงพยาบาล',
             xaxis_title='Transactions'
         )
-        st.plotly_chart(bar, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})
+        plot(bar, key="bar_hospital_overview")
     else:
-        render_chart_placeholder('#### ภาพรวมต่อโรงพยาบาล')
+        render_chart_placeholder('#### ภาพรวมต่อโรงพยาบาล', key="ph_hospital_overview")
 
     # ---- Daily Trend (curved line) ----
     if not df.empty:
@@ -511,11 +508,11 @@ def render_dashboard():
             ))
             ln.update_layout(xaxis_title='วัน/เดือน/ปี', yaxis_title='จำนวน',
                              xaxis_tickangle=-40, margin=dict(t=30,r=20,b=80,l=60))
-            st.plotly_chart(ln, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})
+            plot(ln, key="line_daily_trend")
         else:
-            render_chart_placeholder('#### แนวโน้มรายวัน')
+            render_chart_placeholder('#### แนวโน้มรายวัน', key="ph_daily_trend")
     else:
-        render_chart_placeholder('#### แนวโน้มรายวัน')
+        render_chart_placeholder('#### แนวโน้มรายวัน', key="ph_daily_trend")
 
     # ---- Table by site (Plotly Table) ----
     st.markdown('#### ตารางจำนวน Transaction แยกตามทีมภูมิภาค')
@@ -556,13 +553,13 @@ def render_dashboard():
                 )
             )])
             figt.update_layout(margin=dict(l=0,r=0,t=0,b=0))
-            st.plotly_chart(figt, use_container_width=True, config={'displaylogo': False})
+            plot(figt, key="tbl_site_summary")
         else:
             st.info('ไม่มีข้อมูลตารางในช่วงที่เลือก')
     else:
         st.info('ไม่มีข้อมูลตารางในช่วงที่เลือก')
 
-# ====================== ADMIN (เหมือน v4.3) ======================
+# ====================== ADMIN ======================
 def render_admin():
     apply_ui_patches()
     if not st.session_state.auth['ok']:
