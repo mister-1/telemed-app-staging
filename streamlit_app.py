@@ -1,6 +1,7 @@
-# DashBoard Telemedicine — v4.4.1
-# - FIX: StreamlitDuplicateElementId โดยกำหนด key ให้ทุก st.plotly_chart และ placeholder
-# - คงฟีเจอร์ v4.4 ทั้งหมด (กราฟ/ตารางตามประเภท, เรียงลำดับ, ตัวกรอง, Admin, ฯลฯ)
+# DashBoard Telemedicine — v4.4.2
+# - FIX: Guard missing columns in filters to avoid KeyError (e.g., hospital_type not present)
+# - FIX: Every Plotly element uses a unique key to avoid StreamlitDuplicateElementId
+# - Keep all features from v4.4.1 (dashboard + admin + master data + sample seeding)
 
 import os, uuid, json, bcrypt, requests, random
 import pandas as pd
@@ -11,7 +12,7 @@ from typing import List
 import streamlit as st
 from supabase import create_client, Client
 
-APP_VERSION = "v4.4.1"
+APP_VERSION = "v4.4.2"
 
 # ---------------- App / Theme ----------------
 st.set_page_config(page_title="DashBoard Telemedicine", page_icon="📊", layout="wide")
@@ -32,6 +33,7 @@ TH_PROVINCES = {
     'กรุงเทพมหานคร': 'ภาคกลาง','นนทบุรี': 'ภาคกลาง','ปทุมธานี': 'ภาคกลาง','พระนครศรีอยุธยา': 'ภาคกลาง',
     'อ่างทอง': 'ภาคกลาง','ลพบุรี': 'ภาคกลาง','สิงห์บุรี': 'ภาคกลาง','ชัยนาท': 'ภาคกลาง','สระบุรี': 'ภาคกลาง',
     'นครปฐม': 'ภาคกลาง','สมุทรสาคร': 'ภาคกลาง','สมุทรสงคราม': 'ภาคกลาง','สุพรรณบุรี': 'ภาคกลาง','สมุทรปราการ': 'ภาคกลาง',
+    'นครนายก': 'ภาคกลาง',
     # ภาคตะวันออก
     'ชลบุรี': 'ภาคตะวันออก','ระยอง': 'ภาคตะวันออก','จันทบุรี': 'ภาคตะวันออก','ตราด': 'ภาคตะวันออก',
     'ฉะเชิงเทรา': 'ภาคตะวันออก','ปราจีนบุรี': 'ภาคตะวันออก','สระแก้ว': 'ภาคตะวันออก',
@@ -318,10 +320,18 @@ def render_dashboard():
         df = pd.DataFrame(columns=['date','hospital_id','transactions_count','riders_active',
                                    'name','site_control','region','riders_count','hospital_type'])
 
-    if st.session_state.get('site_filter'):   df = df[df['site_control'].isin(st.session_state['site_filter'])]
-    if st.session_state.get('hosp_sel'):      df = df[df['name'].isin(st.session_state['hosp_sel'])]
-    if st.session_state.get('region_filter'): df = df[df['region'].isin(st.session_state['region_filter'])]
-    if st.session_state.get('type_filter'):   df = df[df['hospital_type'].isin(st.session_state['type_filter'])]
+    # ---- Safe filters (guard missing columns) ----
+    if st.session_state.get('site_filter') and 'site_control' in df.columns:
+        df = df[df['site_control'].isin(st.session_state['site_filter'])]
+
+    if st.session_state.get('hosp_sel') and 'name' in df.columns:
+        df = df[df['name'].isin(st.session_state['hosp_sel'])]
+
+    if st.session_state.get('region_filter') and 'region' in df.columns:
+        df = df[df['region'].isin(st.session_state['region_filter'])]
+
+    if st.session_state.get('type_filter') and 'hospital_type' in df.columns:
+        df = df[df['hospital_type'].isin(st.session_state['type_filter'])]
 
     # ---- KPI cards ----
     st.markdown("### 📈 ภาพรวม")
