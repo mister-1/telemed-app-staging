@@ -4,3 +4,4 @@ plotly>=5.20
 supabase>=2.3
 bcrypt>=4.1
 requests>=2.31
+openpyxl>=3.1
