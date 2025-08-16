@@ -1,10 +1,10 @@
-# DashBoard Telemedicine — v4.9.2 (Full)
-# - Fixed ghost white bar on filter card (strong CSS+JS)
-# - Daily trend backfill (7/14/30d) when selected range ≤ 3 days
-# - Modern filter card (grid), pastel theme + dark mode support
-# - Sidebar exports: PNG / CSV / Excel (filtered)
-# - Full Admin: hospitals, transactions, master data, admins, reports, settings & demo
-# Requirements (requirements.txt):
+# DashBoard Telemedicine — v4.9.3 (Full)
+# - Daily trend: โค้ง (spline) + แสดงตัวเลขทุกเส้น (รวมเส้นย้อนหลัง)
+# - ฟิลเตอร์: ซ่อนข้อความ keyboard_* ที่โผล่มาทับ expander/popover อย่างครอบคลุม
+# - KPI ใหม่: "Transaction สะสม (เดือนนี้ถึงวันที่เลือก)" ใช้ตัวกรองทั้งหมด (ยกเว้นวันตามสูตร)
+# - โหมดมืด/พาสเทล, Sidebar export PNG/CSV/Excel, หน้า Admin ครบ
+#
+# requirements.txt (แนะนำ):
 # streamlit==1.48.1
 # supabase==2.5.1
 # pandas==2.2.2
@@ -26,7 +26,7 @@ from typing import List, Dict
 import streamlit as st
 from supabase import create_client, Client
 
-APP_VERSION = "v4.9.2"
+APP_VERSION = "v4.9.3"
 
 # ---------------- Page / Theme ----------------
 st.set_page_config(page_title="DashBoard Telemedicine", page_icon="📊", layout="wide")
@@ -75,9 +75,6 @@ sb: Client = get_client()
 
 # ---------------- Utilities ----------------
 def hash_pw(pw: str) -> str: return bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
-def verify_pw(pw: str, hashed: str) -> bool:
-    try: return bcrypt.checkpw(pw.encode(), hashed.encode())
-    except Exception: return False
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_df(table: str) -> pd.DataFrame:
@@ -97,10 +94,11 @@ def ensure_default_admin():
     try:
         rows = sb.table('admins').select('username').eq('username','telemed').execute().data
         if not rows:
+            from bcrypt import gensalt, hashpw
             sb.table('admins').insert({
                 'id':str(uuid.uuid4()),
                 'username':'telemed',
-                'password_hash':hash_pw('Telemed@DHI'),
+                'password_hash':hashpw('Telemed@DHI'.encode(), gensalt()).decode(),
                 'role':'admin'
             }).execute()
     except Exception:
@@ -254,7 +252,7 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# CSS ล้าง text-input ผีใน #filter-card
+# CSS ล้าง text-input ผี + กัน margin
 st.markdown("""
 <style>
   #filter-card input[type="text"],
@@ -270,26 +268,34 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def apply_ui_patches():
-    # JS สแกน input/label ผีและซ่อน (เฝ้า DOM ทุกครั้ง)
+    # JS ซ่อน keyboard_* และ input ผี (แบบครอบคลุมกว่าเดิม)
     st.components.v1.html("""
     <script>
       function wipeGhosts(){
         const root = document.querySelector('#filter-card');
-        if(!root) return;
-        root.querySelectorAll('input[type="text"]').forEach(inp=>{
-          const hasLabel = !!(inp.getAttribute('aria-label')||'').trim();
-          const w = inp.getBoundingClientRect().width;
-          if(!hasLabel && w > 280){
-            const host = inp.closest('div');
-            if(host){ host.style.display='none'; host.style.height='0px'; }
-            inp.style.display='none';
-          }
-        });
-        document.querySelectorAll('button,div,span,label').forEach(el=>{
-          const t=(el.innerText||'').trim();
-          if(['keyboard_double_arrow_right','keboard','keyboard'].includes(t)){
-            el.style.display='none';
-          }
+        if(root){
+          root.querySelectorAll('input[type="text"]').forEach(inp=>{
+            const hasLabel = !!(inp.getAttribute('aria-label')||'').trim();
+            const w = inp.getBoundingClientRect().width;
+            if(!hasLabel && w > 280){
+              const host = inp.closest('div');
+              if(host){ host.style.display='none'; host.style.height='0px'; }
+              inp.style.display='none';
+            }
+          });
+        }
+        // ซ่อนทุก element ที่มีข้อความขึ้นต้น/ประกอบด้วย 'keyboard'
+        const scan = (el)=>((el.innerText||'').toLowerCase().includes('keyboard'));
+        document.querySelectorAll('*').forEach(el=>{
+          try{
+            const ar = (el.getAttribute('aria-label')||'').toLowerCase();
+            if(scan(el) || ar.includes('keyboard')){
+              // อย่าซ่อนปุ่มหลักๆ: ถ้าเป็นปุ่ม expander ทั้งก้อน ไม่ซ่อน
+              const role = el.getAttribute('role')||'';
+              if(role==='button' && el.closest('.stExpander')) return;
+              el.style.display='none';
+            }
+          }catch(e){}
         });
       }
       wipeGhosts();
@@ -362,7 +368,7 @@ def multiselect_dropdown(label: str, options: list, state_key: str, default_all:
         st.session_state[state_key] = sel
     return st.session_state[state_key]
 
-# ---------- Daily trend backfill ----------
+# ---------- Daily trend backfill (with labels on all lines) ----------
 def render_daily_trend_with_backfill(df_selected: pd.DataFrame,
                                      df_all_no_date: pd.DataFrame,
                                      start_date: date, end_date: date,
@@ -408,25 +414,36 @@ def render_daily_trend_with_backfill(df_selected: pd.DataFrame,
         return f"{THW[dt.dayofweek]} {dt.day}/{dt.month}/{str(dt.year)[-2:]}"
 
     fig = go.Figure()
+
+    # Backfill lines (dotted + labels)
     if not daily_back.empty:
         fig.add_trace(go.Scatter(
             x=daily_back['date'].apply(thai_label),
             y=daily_back['transactions_count'],
-            mode='lines+markers',
+            mode='lines+markers+text',
             name='ย้อนหลัง (Transactions)',
+            text=daily_back['transactions_count'],
+            textposition='top center',
+            textfont=dict(size=10),
             line=dict(width=2, dash='dot'),
-            marker=dict(opacity=0.6),
-            opacity=0.7
+            line_shape='spline',
+            opacity=0.85
         ))
         fig.add_trace(go.Scatter(
             x=daily_back['date'].apply(thai_label),
             y=daily_back['riders_active'],
-            mode='lines+markers',
+            mode='lines+markers+text',
             name='ย้อนหลัง (Rider Active)',
-            line=dict(width=1, dash='dot'),
-            visible='legendonly',
-            opacity=0.6
+            text=daily_back['riders_active'],
+            textposition='top center',
+            textfont=dict(size=10),
+            line=dict(width=1.5, dash='dot'),
+            line_shape='spline',
+            opacity=0.7,
+            visible='legendonly'  # ยังซ่อนไว้เป็นค่าเริ่มต้น แต่มี label พร้อม
         ))
+
+    # Selected-range lines (main + labels)
     if not daily_sel.empty:
         fig.add_trace(go.Scatter(
             x=daily_sel['date'].apply(thai_label),
@@ -441,12 +458,15 @@ def render_daily_trend_with_backfill(df_selected: pd.DataFrame,
         fig.add_trace(go.Scatter(
             x=daily_sel['date'].apply(thai_label),
             y=daily_sel['riders_active'],
-            mode='lines+markers',
+            mode='lines+markers+text',
             name='Rider Active',
-            visible='legendonly',
+            text=daily_sel['riders_active'],
+            textposition='top center',
             line=dict(width=2, dash='dot'),
-            line_shape='spline'
+            line_shape='spline',
+            visible='legendonly'  # ซ่อนเส้นรองไว้ก่อน
         ))
+
     fig.update_layout(
         xaxis_title='วัน/เดือน/ปี', yaxis_title='จำนวน',
         xaxis_tickangle=-40,
@@ -539,6 +559,7 @@ def render_dashboard():
         df_all_no_date = pd.DataFrame(columns=['date','hospital_id','transactions_count','riders_active',
                                                'name','site_control','region','riders_count','hospital_type'])
 
+    # non-date filters
     if st.session_state.get('site_filter') and 'site_control' in df_all_no_date.columns:
         df_all_no_date = df_all_no_date[df_all_no_date['site_control'].isin(st.session_state['site_filter'])]
     if st.session_state.get('hosp_sel') and 'name' in df_all_no_date.columns:
@@ -548,6 +569,7 @@ def render_dashboard():
     if st.session_state.get('type_filter') and 'hospital_type' in df_all_no_date.columns:
         df_all_no_date = df_all_no_date[df_all_no_date['hospital_type'].isin(st.session_state['type_filter'])]
 
+    # date-filtered
     if not df_all_no_date.empty:
         df = df_all_no_date[(df_all_no_date['date'] >= start_date) & (df_all_no_date['date'] <= end_date)].copy()
     else:
@@ -555,7 +577,12 @@ def render_dashboard():
 
     # ---- KPI cards ----
     st.markdown("### 📈 ภาพรวม")
-    k1,k2,k3,k4,k5 = st.columns(5)
+    # คำนวณเดือนนี้ถึงวันที่เลือก (อิง end_date)
+    month_start = end_date.replace(day=1)
+    df_month_to_end = df_all_no_date[(df_all_no_date['date'] >= month_start) & (df_all_no_date['date'] <= end_date)]
+    month_accum = int(df_month_to_end['transactions_count'].sum()) if not df_month_to_end.empty else 0
+
+    k1,k2,k3,k4,k5,k6 = st.columns(6)
     total_tx = int(df['transactions_count'].sum()) if not df.empty else 0
     uniq_h   = df['hospital_id'].nunique() if not df.empty else 0
     riders_cap = int(df['riders_count'].fillna(0).sum()) if not df.empty else 0
@@ -566,7 +593,8 @@ def render_dashboard():
         (k2,'โรงพยาบาลทั้งหมด', f"{uniq_h}"),
         (k3,'จำนวนไรเดอร์รวม', f"{riders_cap:,}"),
         (k4,'เฉลี่ยต่อวัน', f"{avg_day:,}"),
-        (k5,'ไรเดอร์ Active', f"{riders_active:,}")
+        (k5,'ไรเดอร์ Active', f"{riders_active:,}"),
+        (k6,'Transaction สะสม (เดือนนี้ถึงวันที่เลือก)', f"{month_accum:,}")
     ]:
         col.markdown(f"<div class='kpi-card'><div class='kpi-title'>{title}</div><div class='kpi-value'>{val}</div></div>", unsafe_allow_html=True)
 
@@ -581,7 +609,7 @@ def render_dashboard():
                               texttemplate='<b>%{label}</b><br>%{value:,} (%{percent:.1%})',
                               marker=dict(line=dict(color=('#fff' if not DARK else '#111'), width=2)),
                               pull=[0.02]*len(gsite))
-            pie.update_layout(annotations=[dict(text=f"{total_tx:,}<br>รวม", x=0.5, y=0.5, showarrow=False, font=dict(size=18))])
+            pie.update_layout(annotations=[dict(text=f"{int(gsite['transactions_count'].sum()):,}<br>รวม", x=0.5, y=0.5, showarrow=False, font=dict(size=18))])
             st.plotly_chart(pie, use_container_width=True, config={'displaylogo': False})
             st.session_state['figs']['pie_sitecontrol'] = pie
         else:
@@ -589,7 +617,7 @@ def render_dashboard():
     else:
         render_chart_placeholder('#### จำนวน Transaction ตามทีมภูมิภาค (กราฟวงกลม)', key="ph_site_pie")
 
-    # ---- Daily Trend (with backfill) ----
+    # ---- Daily Trend (with backfill & labels on all lines) ----
     render_daily_trend_with_backfill(df_selected=df,
                                      df_all_no_date=df_all_no_date,
                                      start_date=start_date,
