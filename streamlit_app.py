@@ -1,19 +1,19 @@
-# DashBoard Telemedicine — v4.9.1 (Full, filter white-bar fix)
-# - ปรับกล่อง "ตัวกรองข้อมูล" ให้เป็นการ์ดสวย + Grid ย่อ/ขยายได้ และไม่มีแถบสีขาว (ghost input fix)
-# - Sidebar: PNG/CSV/Excel export (ข้อมูลที่กรองแล้ว)
-# - Thai date (DD/MM/YYYY) + ปุ่ม Today / เดือนนี้ + Reset
-# - ลดช่องว่างบนสุด, โหมดมืดรองรับสีกราฟ/การ์ด
-# - หน้า Admin ครบ: โรงพยาบาล, Transaction, ข้อมูลหลัก, ผู้ดูแล, รายงาน, ตั้งค่า & ข้อมูลตัวอย่าง
-# NOTE: ต้องมี requirements.txt อย่างน้อย:
-# streamlit==1.36.0
-# supabase
-# pandas
-# plotly
-# kaleido
-# pillow
-# bcrypt
-# openpyxl
-# requests
+# DashBoard Telemedicine — v4.9.2 (Full)
+# - Fixed ghost white bar on filter card (strong CSS+JS)
+# - Daily trend backfill (7/14/30d) when selected range ≤ 3 days
+# - Modern filter card (grid), pastel theme + dark mode support
+# - Sidebar exports: PNG / CSV / Excel (filtered)
+# - Full Admin: hospitals, transactions, master data, admins, reports, settings & demo
+# Requirements (requirements.txt):
+# streamlit==1.48.1
+# supabase==2.5.1
+# pandas==2.2.2
+# plotly==5.23.0
+# kaleido==0.2.1
+# Pillow==10.3.0
+# bcrypt==4.2.0
+# openpyxl==3.1.3
+# requests==2.32.3
 
 import os, uuid, json, bcrypt, requests, random, io
 import pandas as pd
@@ -26,7 +26,7 @@ from typing import List, Dict
 import streamlit as st
 from supabase import create_client, Client
 
-APP_VERSION = "v4.9.1"
+APP_VERSION = "v4.9.2"
 
 # ---------------- Page / Theme ----------------
 st.set_page_config(page_title="DashBoard Telemedicine", page_icon="📊", layout="wide")
@@ -209,7 +209,7 @@ CARD_BG = "#0b1220" if DARK else "#FFFFFF"
 CARD_BORDER = "#1f2937" if DARK else "#E5E7EB"
 CARD_TXT = "#E5E7EB" if DARK else "#334155"
 
-# ---- CSS (อัปเดตใหม่) ----
+# ---- CSS ----
 st.markdown(f"""
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@400;600&display=swap');
@@ -219,12 +219,9 @@ st.markdown(f"""
     --card-text: {CARD_TXT};
   }}
   .stApp {{ font-family:'Kanit',system-ui; }}
-
-  /* ลดช่องว่างบน/ล่าง และหัวเรื่อง */
   .main .block-container {{ padding-top: .25rem; padding-bottom: 1.6rem; }}
   h1 {{ margin: .25rem 0 .75rem 0 !important; line-height: 1.2; }}
 
-  /* KPI Card */
   .kpi-card {{
     background:var(--card-bg); border:1px solid var(--card-border); color:var(--card-text);
     border-radius:16px; padding:1rem 1.2rem; box-shadow:0 6px 18px rgba(0,0,0,.08);
@@ -232,27 +229,20 @@ st.markdown(f"""
   .kpi-title {{ font-weight:600; opacity:.85; }}
   .kpi-value {{ font-size:1.8rem; font-weight:700; margin-top:.25rem; }}
 
-  /* Sticky filter + card */
   .filter-sticky {{ position: sticky; top: .25rem; z-index: 5; }}
   .filter-card {{
     background:var(--card-bg); border:1px solid var(--card-border); color:var(--card-text);
     border-radius:16px; padding:14px; box-shadow:0 8px 22px rgba(0,0,0,.06);
   }}
-
-  /* ปุ่ม */
   .filter-card .stButton>button {{
     width:100%; height:46px; border-radius:12px; font-weight:600;
   }}
-
-  /* Grid ของฟิลเตอร์ */
   .filter-grid-row1 {{
     display:grid; grid-template-columns: 1.4fr .45fr .45fr .6fr; gap:.75rem;
   }}
   .filter-grid-row2 {{
     display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:.75rem; margin-top:.6rem;
   }}
-
-  /* Expander header ให้เหมือนการ์ด */
   .stExpander > div[role='button'] {{
     background:var(--card-bg); border:1px solid var(--card-border);
     border-radius:14px; padding:10px 14px;
@@ -264,47 +254,47 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# CSS แรงขึ้นเฉพาะ #filter-card เพื่อลบ text-input ผี
+# CSS ล้าง text-input ผีใน #filter-card
 st.markdown("""
 <style>
-  #filter-card [data-testid="stTextInput"],
+  #filter-card input[type="text"],
+  #filter-card textarea,
   #filter-card .stTextInput,
-  #filter-card input[type="text"]{
+  #filter-card div[data-baseweb="input"] {
     display:none !important;
     height:0 !important; margin:0 !important; padding:0 !important; border:0 !important;
     opacity:0 !important; overflow:hidden !important;
   }
+  #filter-card [data-testid="stDateInput"] { margin-top: 0 !important; }
 </style>
 """, unsafe_allow_html=True)
 
 def apply_ui_patches():
-    # JS กวาด element ผีและ label แปลก ๆ เสมอ (รองรับ DOM เปลี่ยน)
+    # JS สแกน input/label ผีและซ่อน (เฝ้า DOM ทุกครั้ง)
     st.components.v1.html("""
     <script>
-      // ซ่อน label ผิดพลาดบางตัว
-      setTimeout(()=>{
-        const hideTexts = ['keyboard_double_arrow_right','keboard','keyboard'];
+      function wipeGhosts(){
+        const root = document.querySelector('#filter-card');
+        if(!root) return;
+        root.querySelectorAll('input[type="text"]').forEach(inp=>{
+          const hasLabel = !!(inp.getAttribute('aria-label')||'').trim();
+          const w = inp.getBoundingClientRect().width;
+          if(!hasLabel && w > 280){
+            const host = inp.closest('div');
+            if(host){ host.style.display='none'; host.style.height='0px'; }
+            inp.style.display='none';
+          }
+        });
         document.querySelectorAll('button,div,span,label').forEach(el=>{
           const t=(el.innerText||'').trim();
-          if(hideTexts.includes(t)){ el.style.display='none'; }
-        });
-      }, 0);
-
-      // กวาด text-input ผีใน #filter-card เสมอ (รองรับ DOM เปลี่ยน)
-      function killGhost(){
-        const root=document.querySelector('#filter-card');
-        if(!root) return;
-        root.querySelectorAll('[data-testid="stTextInput"], .stTextInput, input[type=text]').forEach(el=>{
-          const label = el.querySelector('label');
-          if(!label || (label.innerText||'').trim()===''){  // ไม่มี label = ผี
+          if(['keyboard_double_arrow_right','keboard','keyboard'].includes(t)){
             el.style.display='none';
-            el.style.height='0px'; el.style.margin='0'; el.style.padding='0'; el.style.border='0';
           }
         });
       }
-      killGhost();
-      const obs=new MutationObserver(killGhost);
-      obs.observe(document.body,{childList:true,subtree:true});
+      wipeGhosts();
+      const obs = new MutationObserver(wipeGhosts);
+      obs.observe(document.body, {subtree:true, childList:true});
     </script>
     """, height=0)
 
@@ -372,6 +362,100 @@ def multiselect_dropdown(label: str, options: list, state_key: str, default_all:
         st.session_state[state_key] = sel
     return st.session_state[state_key]
 
+# ---------- Daily trend backfill ----------
+def render_daily_trend_with_backfill(df_selected: pd.DataFrame,
+                                     df_all_no_date: pd.DataFrame,
+                                     start_date: date, end_date: date,
+                                     dark: bool) -> None:
+    daily_sel = (df_selected.groupby('date')
+                 .agg(transactions_count=('transactions_count','sum'),
+                      riders_active=('riders_active','sum'))
+                 .reset_index()
+                 .sort_values('date'))
+
+    back_days = 0
+    if (end_date - start_date).days <= 2:
+        opt = st.selectbox(
+            'เติมข้อมูลย้อนหลังสำหรับกราฟ',
+            ['ไม่เติม','ย้อนหลัง 7 วัน','ย้อนหลัง 14 วัน','ย้อนหลัง 30 วัน'],
+            index=1
+        )
+        back_days = {'ไม่เติม':0,'ย้อนหลัง 7 วัน':7,'ย้อนหลัง 14 วัน':14,'ย้อนหลัง 30 วัน':30}[opt]
+
+    daily_back = pd.DataFrame(columns=['date','transactions_count','riders_active'])
+    if back_days > 0 and not df_all_no_date.empty:
+        start_ext = start_date - timedelta(days=back_days)
+        mask = (df_all_no_date['date'] >= start_ext) & (df_all_no_date['date'] < start_date)
+        daily_back = (df_all_no_date.loc[mask]
+                      .groupby('date')
+                      .agg(transactions_count=('transactions_count','sum'),
+                           riders_active=('riders_active','sum'))
+                      .reset_index()
+                      .sort_values('date'))
+
+    if daily_sel.empty and daily_back.empty:
+        fig = go.Figure()
+        fig.add_annotation(text="ไม่มีข้อมูล", x=0.5, y=0.5, showarrow=False)
+        fig.update_xaxes(visible=False); fig.update_yaxes(visible=False)
+        fig.update_layout(height=360, margin=dict(l=0,r=0,t=10,b=10))
+        st.markdown('#### แนวโน้มรายวัน')
+        st.plotly_chart(fig, use_container_width=True, config={'displaylogo': False})
+        return
+
+    def thai_label(d):
+        THW = ['วันจันทร์','วันอังคาร','วันพุธ','วันพฤหัสบดี','วันศุกร์','วันเสาร์','วันอาทิตย์']
+        dt = pd.to_datetime(d)
+        return f"{THW[dt.dayofweek]} {dt.day}/{dt.month}/{str(dt.year)[-2:]}"
+
+    fig = go.Figure()
+    if not daily_back.empty:
+        fig.add_trace(go.Scatter(
+            x=daily_back['date'].apply(thai_label),
+            y=daily_back['transactions_count'],
+            mode='lines+markers',
+            name='ย้อนหลัง (Transactions)',
+            line=dict(width=2, dash='dot'),
+            marker=dict(opacity=0.6),
+            opacity=0.7
+        ))
+        fig.add_trace(go.Scatter(
+            x=daily_back['date'].apply(thai_label),
+            y=daily_back['riders_active'],
+            mode='lines+markers',
+            name='ย้อนหลัง (Rider Active)',
+            line=dict(width=1, dash='dot'),
+            visible='legendonly',
+            opacity=0.6
+        ))
+    if not daily_sel.empty:
+        fig.add_trace(go.Scatter(
+            x=daily_sel['date'].apply(thai_label),
+            y=daily_sel['transactions_count'],
+            mode='lines+markers+text',
+            name='Transactions',
+            text=daily_sel['transactions_count'],
+            textposition='top center',
+            line=dict(width=3),
+            line_shape='spline'
+        ))
+        fig.add_trace(go.Scatter(
+            x=daily_sel['date'].apply(thai_label),
+            y=daily_sel['riders_active'],
+            mode='lines+markers',
+            name='Rider Active',
+            visible='legendonly',
+            line=dict(width=2, dash='dot'),
+            line_shape='spline'
+        ))
+    fig.update_layout(
+        xaxis_title='วัน/เดือน/ปี', yaxis_title='จำนวน',
+        xaxis_tickangle=-40,
+        margin=dict(t=30, r=20, b=80, l=60)
+    )
+    st.markdown('#### แนวโน้มรายวัน')
+    st.plotly_chart(fig, use_container_width=True, config={'displaylogo': False})
+    st.session_state.setdefault('figs', {})['line_daily_trend'] = fig
+
 # ====================== DASHBOARD ======================
 def render_chart_placeholder(title:str, key:str):
     fig = go.Figure()
@@ -386,10 +470,11 @@ def render_dashboard():
     st.markdown("# DashBoard Telemedicine")
 
     hospitals_df = load_df('hospitals')
-    tx_df = load_df('transactions')
+    tx_all = load_df('transactions')
     figs: Dict[str, go.Figure] = {}
+    st.session_state['figs'] = figs
 
-    # ---------- Filters (card + sticky) ----------
+    # ---------- Filters ----------
     st.markdown("### 🎛️ ตัวกรอง")
     if 'date_range' not in st.session_state:
         today = date.today()
@@ -399,7 +484,6 @@ def render_dashboard():
     with st.expander("🧩 ตัวกรองข้อมูล (คลิกเพื่อย่อ/ขยาย)", expanded=True):
         st.markdown("<div id='filter-card' class='filter-card'>", unsafe_allow_html=True)
 
-        # แถวบน: ช่วงวันที่ + ปุ่มลัด + Reset (Grid)
         st.markdown("<div class='filter-grid-row1'>", unsafe_allow_html=True)
         col_d, col_tdy, col_mth, col_rst = st.columns([1.4, .45, .45, .6])
         with col_d:
@@ -410,25 +494,21 @@ def render_dashboard():
                                key='filter_date_range')
             if isinstance(dr, tuple) and len(dr)==2:
                 st.session_state['date_range'] = dr
-
         with col_tdy:
             if st.button('Today'):
                 st.session_state['date_range'] = (today, today); rerun()
-
         with col_mth:
             if st.button('เดือนนี้'):
                 first = today.replace(day=1)
                 st.session_state['date_range'] = (first, today); rerun()
-
         with col_rst:
             if st.button('↺ Reset ตัวกรอง'):
                 st.session_state['date_range'] = (today, today)
                 for k in ['hosp_sel','site_filter','region_filter','type_filter']:
                     st.session_state[k] = []
                 rerun()
-        st.markdown("</div>", unsafe_allow_html=True)  # end row1
+        st.markdown("</div>", unsafe_allow_html=True)
 
-        # แถวล่าง: 4 dropdown (Grid)
         st.markdown("<div class='filter-grid-row2'>", unsafe_allow_html=True)
         c1, c2, c3, c4 = st.columns(4)
         with c1:
@@ -444,31 +524,34 @@ def render_dashboard():
                     if 'hospital_type' in hospitals_df.columns \
                     else get_master_names('hospital_types', DEFAULT_HOSPITAL_TYPES)
             selected_types = multiselect_dropdown("🏷️ ประเภทโรงพยาบาล", types, "type_filter", default_all=True)
-        st.markdown("</div>", unsafe_allow_html=True)  # end row2
+        st.markdown("</div>", unsafe_allow_html=True)
 
-        st.markdown("</div>", unsafe_allow_html=True)   # end filter-card
-    st.markdown("</div>", unsafe_allow_html=True)       # end sticky
+        st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     start_date, end_date = st.session_state['date_range']
 
-    # ---- Merge & filter ----
-    if not tx_df.empty:
-        tx_df['date'] = pd.to_datetime(tx_df['date']).dt.date
-        tx_df = tx_df[(tx_df['date']>=start_date)&(tx_df['date']<=end_date)]
-    if not tx_df.empty and not hospitals_df.empty:
-        df = tx_df.merge(hospitals_df, left_on='hospital_id', right_on='id', how='left', suffixes=('','_h'))
+    # ---- Merge & filter (สองชุด) ----
+    if not tx_all.empty:
+        tx_all['date'] = pd.to_datetime(tx_all['date']).dt.date
+        df_all_no_date = tx_all.merge(hospitals_df, left_on='hospital_id', right_on='id', how='left', suffixes=('','_h'))
     else:
-        df = pd.DataFrame(columns=['date','hospital_id','transactions_count','riders_active',
-                                   'name','site_control','region','riders_count','hospital_type'])
+        df_all_no_date = pd.DataFrame(columns=['date','hospital_id','transactions_count','riders_active',
+                                               'name','site_control','region','riders_count','hospital_type'])
 
-    if st.session_state.get('site_filter') and 'site_control' in df.columns:
-        df = df[df['site_control'].isin(st.session_state['site_filter'])]
-    if st.session_state.get('hosp_sel') and 'name' in df.columns:
-        df = df[df['name'].isin(st.session_state['hosp_sel'])]
-    if st.session_state.get('region_filter') and 'region' in df.columns:
-        df = df[df['region'].isin(st.session_state['region_filter'])]
-    if st.session_state.get('type_filter') and 'hospital_type' in df.columns:
-        df = df[df['hospital_type'].isin(st.session_state['type_filter'])]
+    if st.session_state.get('site_filter') and 'site_control' in df_all_no_date.columns:
+        df_all_no_date = df_all_no_date[df_all_no_date['site_control'].isin(st.session_state['site_filter'])]
+    if st.session_state.get('hosp_sel') and 'name' in df_all_no_date.columns:
+        df_all_no_date = df_all_no_date[df_all_no_date['name'].isin(st.session_state['hosp_sel'])]
+    if st.session_state.get('region_filter') and 'region' in df_all_no_date.columns:
+        df_all_no_date = df_all_no_date[df_all_no_date['region'].isin(st.session_state['region_filter'])]
+    if st.session_state.get('type_filter') and 'hospital_type' in df_all_no_date.columns:
+        df_all_no_date = df_all_no_date[df_all_no_date['hospital_type'].isin(st.session_state['type_filter'])]
+
+    if not df_all_no_date.empty:
+        df = df_all_no_date[(df_all_no_date['date'] >= start_date) & (df_all_no_date['date'] <= end_date)].copy()
+    else:
+        df = df_all_no_date.copy()
 
     # ---- KPI cards ----
     st.markdown("### 📈 ภาพรวม")
@@ -500,45 +583,18 @@ def render_dashboard():
                               pull=[0.02]*len(gsite))
             pie.update_layout(annotations=[dict(text=f"{total_tx:,}<br>รวม", x=0.5, y=0.5, showarrow=False, font=dict(size=18))])
             st.plotly_chart(pie, use_container_width=True, config={'displaylogo': False})
-            figs['pie_sitecontrol'] = pie
+            st.session_state['figs']['pie_sitecontrol'] = pie
         else:
             render_chart_placeholder('#### จำนวน Transaction ตามทีมภูมิภาค (กราฟวงกลม)', key="ph_site_pie")
     else:
         render_chart_placeholder('#### จำนวน Transaction ตามทีมภูมิภาค (กราฟวงกลม)', key="ph_site_pie")
 
-    # ---- Daily Trend ----
-    st.markdown('#### แนวโน้มรายวัน')
-    if not df.empty:
-        daily = df.groupby('date').agg({'transactions_count':'sum','riders_active':'sum'}).reset_index().sort_values('date')
-        if not daily.empty:
-            THW = ['วันจันทร์','วันอังคาร','วันพุธ','วันพฤหัสบดี','วันศุกร์','วันเสาร์','วันอาทิตย์']
-            labels = daily['date'].apply(lambda d: f"{THW[pd.to_datetime(d).dayofweek]} {pd.to_datetime(d).day}/{pd.to_datetime(d).month}/{str(pd.to_datetime(d).year)[-2:]}")
-            ln = go.Figure()
-            ln.add_trace(go.Scatter(
-                x=labels, y=daily['transactions_count'],
-                mode='lines+markers+text',
-                name='Transactions',
-                text=daily['transactions_count'],
-                textposition='top center',
-                line=dict(width=3),
-                line_shape='spline'
-            ))
-            ln.add_trace(go.Scatter(
-                x=labels, y=daily['riders_active'],
-                mode='lines+markers',
-                name='Rider Active',
-                visible='legendonly',
-                line=dict(width=2, dash='dot'),
-                line_shape='spline'
-            ))
-            ln.update_layout(xaxis_title='วัน/เดือน/ปี', yaxis_title='จำนวน',
-                             xaxis_tickangle=-40, margin=dict(t=30,r=20,b=80,l=60))
-            st.plotly_chart(ln, use_container_width=True, config={'displaylogo': False})
-            figs['line_daily_trend'] = ln
-        else:
-            render_chart_placeholder('#### แนวโน้มรายวัน', key="ph_daily_trend")
-    else:
-        render_chart_placeholder('#### แนวโน้มรายวัน', key="ph_daily_trend")
+    # ---- Daily Trend (with backfill) ----
+    render_daily_trend_with_backfill(df_selected=df,
+                                     df_all_no_date=df_all_no_date,
+                                     start_date=start_date,
+                                     end_date=end_date,
+                                     dark=DARK)
 
     # ---- By Hospital Type (summary) ----
     st.markdown('### 🏷️ ประเภทโรงพยาบาล (สรุป)')
@@ -574,7 +630,7 @@ def render_dashboard():
                                 pull=[0.02]*len(gtype_sum))
             pie_t.update_layout(annotations=[dict(text=f"{int(gtype_sum.transactions_count.sum()):,}<br>รวม", x=0.5, y=0.5, showarrow=False, font=dict(size=16))])
             st.plotly_chart(pie_t, use_container_width=True, config={'displaylogo': False})
-            figs['pie_hospital_type'] = pie_t
+            st.session_state['figs']['pie_hospital_type'] = pie_t
 
         with c2:
             st.markdown('#### ภาพรวมตามประเภทโรงพยาบาล')
@@ -588,7 +644,7 @@ def render_dashboard():
                                 yaxis_title='ประเภท', xaxis_title='Transactions',
                                 height=max(420, 50*len(gtype_for_bar)+180))
             st.plotly_chart(bar_t, use_container_width=True, config={'displaylogo': False})
-            figs['bar_hospital_type'] = bar_t
+            st.session_state['figs']['bar_hospital_type'] = bar_t
     else:
         render_chart_placeholder('#### สัดส่วน/ภาพรวมตามประเภทโรงพยาบาล', key="ph_type_summary")
 
@@ -606,7 +662,6 @@ def render_dashboard():
             else:
                 order = st.selectbox('ทิศทาง', ['ก→ฮ','ฮ→ก'], index=0)
                 gh = gh.sort_values('name', ascending=(order=='ก→ฮ'))
-
         gh = gh.reset_index(drop=True)
         bar = px.bar(gh, y='name', x='transactions_count', orientation='h', text='transactions_count',
                      color='name', color_discrete_sequence=PALETTE)
@@ -619,7 +674,7 @@ def render_dashboard():
             xaxis_title='Transactions'
         )
         st.plotly_chart(bar, use_container_width=True, config={'displaylogo': False})
-        figs['bar_hospital_overview'] = bar
+        st.session_state['figs']['bar_hospital_overview'] = bar
     else:
         render_chart_placeholder('#### ภาพรวมต่อโรงพยาบาล', key="ph_hospital_overview")
 
@@ -675,7 +730,7 @@ def render_dashboard():
         f"{'ทั้งหมด' if not st.session_state.get('hosp_sel') else ', '.join(st.session_state['hosp_sel'])}  |  "
         f"ทีม: {'ทั้งหมด' if not st.session_state.get('site_filter') else ', '.join(st.session_state['site_filter'])}"
     )
-    png_bytes = build_dashboard_png(figs, "DashBoard Telemedicine", subtitle, dark=DARK)
+    png_bytes = build_dashboard_png(st.session_state['figs'], "DashBoard Telemedicine", subtitle, dark=DARK)
 
     if not df.empty:
         df_csv = df.copy()
@@ -831,7 +886,6 @@ def render_admin():
                         st.session_state['open_add_tx'] = False
                         rerun()
 
-            # Import CSV
             with st.expander('📥 นำเข้า CSV (hospital_name,date,transactions_count,riders_active)'):
                 up = st.file_uploader('เลือกไฟล์ CSV', type=['csv'], disabled=not can_edit)
                 auto_create = st.checkbox('สร้างโรงพยาบาลอัตโนมัติถ้าไม่พบ', value=False, disabled=not can_edit)
@@ -871,7 +925,6 @@ def render_admin():
                     except Exception:
                         st.error('นำเข้าไม่สำเร็จ')
 
-            # Edit under Add
             raw_tx = load_df('transactions')
             default_h = st.session_state.get('edit_target_h')
             default_d = st.session_state.get('edit_target_d', date.today())
@@ -927,7 +980,6 @@ def render_admin():
                                 except Exception:
                                     st.error('ลบไม่สำเร็จ')
 
-            # View table
             st.markdown('#### รายการ Transaction (มุมมอง)')
             if raw_tx.empty:
                 st.info('ยังไม่มีข้อมูล')
@@ -1198,13 +1250,13 @@ def render_admin():
                 except Exception:
                     st.error('ลบข้อมูลตัวอย่างไม่สำเร็จ')
 
-# ---------------- Render main page ----------------
+# ---------------- Render ----------------
 if st.query_params.get('page','dashboard') == 'admin':
     render_admin()
 else:
     render_dashboard()
 
-# ---------------- Sidebar: ปุ่มดาวน์โหลด/ส่งออก ----------------
+# ---------------- Sidebar downloads ----------------
 with sidebar_dl_container:
     st.markdown("## ⬇️ บันทึก/ส่งออก")
     dls = st.session_state.get('downloads', {})
