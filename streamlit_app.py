@@ -1,5 +1,5 @@
-# DashBoard Telemedicine — v4.9.0 (Full)
-# - ปรับกล่อง "ตัวกรองข้อมูล" ให้เป็นการ์ดสวย + Grid ย่อ/ขยายได้ และไม่มีแถบสีขาว
+# DashBoard Telemedicine — v4.9.1 (Full, filter white-bar fix)
+# - ปรับกล่อง "ตัวกรองข้อมูล" ให้เป็นการ์ดสวย + Grid ย่อ/ขยายได้ และไม่มีแถบสีขาว (ghost input fix)
 # - Sidebar: PNG/CSV/Excel export (ข้อมูลที่กรองแล้ว)
 # - Thai date (DD/MM/YYYY) + ปุ่ม Today / เดือนนี้ + Reset
 # - ลดช่องว่างบนสุด, โหมดมืดรองรับสีกราฟ/การ์ด
@@ -26,7 +26,7 @@ from typing import List, Dict
 import streamlit as st
 from supabase import create_client, Client
 
-APP_VERSION = "v4.9.0"
+APP_VERSION = "v4.9.1"
 
 # ---------------- Page / Theme ----------------
 st.set_page_config(page_title="DashBoard Telemedicine", page_icon="📊", layout="wide")
@@ -239,9 +239,6 @@ st.markdown(f"""
     border-radius:16px; padding:14px; box-shadow:0 8px 22px rgba(0,0,0,.06);
   }}
 
-  /* ซ่อน text-input ผี ที่บางครั้ง Streamlit สร้างใน expander */
-  .filter-card .stTextInput:first-child {{ display:none !important; height:0 !important; margin:0 !important; padding:0 !important; }}
-
   /* ปุ่ม */
   .filter-card .stButton>button {{
     width:100%; height:46px; border-radius:12px; font-weight:600;
@@ -267,9 +264,24 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
+# CSS แรงขึ้นเฉพาะ #filter-card เพื่อลบ text-input ผี
+st.markdown("""
+<style>
+  #filter-card [data-testid="stTextInput"],
+  #filter-card .stTextInput,
+  #filter-card input[type="text"]{
+    display:none !important;
+    height:0 !important; margin:0 !important; padding:0 !important; border:0 !important;
+    opacity:0 !important; overflow:hidden !important;
+  }
+</style>
+""", unsafe_allow_html=True)
+
 def apply_ui_patches():
+    # JS กวาด element ผีและ label แปลก ๆ เสมอ (รองรับ DOM เปลี่ยน)
     st.components.v1.html("""
     <script>
+      // ซ่อน label ผิดพลาดบางตัว
       setTimeout(()=>{
         const hideTexts = ['keyboard_double_arrow_right','keboard','keyboard'];
         document.querySelectorAll('button,div,span,label').forEach(el=>{
@@ -277,6 +289,22 @@ def apply_ui_patches():
           if(hideTexts.includes(t)){ el.style.display='none'; }
         });
       }, 0);
+
+      // กวาด text-input ผีใน #filter-card เสมอ (รองรับ DOM เปลี่ยน)
+      function killGhost(){
+        const root=document.querySelector('#filter-card');
+        if(!root) return;
+        root.querySelectorAll('[data-testid="stTextInput"], .stTextInput, input[type=text]').forEach(el=>{
+          const label = el.querySelector('label');
+          if(!label || (label.innerText||'').trim()===''){  // ไม่มี label = ผี
+            el.style.display='none';
+            el.style.height='0px'; el.style.margin='0'; el.style.padding='0'; el.style.border='0';
+          }
+        });
+      }
+      killGhost();
+      const obs=new MutationObserver(killGhost);
+      obs.observe(document.body,{childList:true,subtree:true});
     </script>
     """, height=0)
 
@@ -369,7 +397,7 @@ def render_dashboard():
 
     st.markdown("<div class='filter-sticky'>", unsafe_allow_html=True)
     with st.expander("🧩 ตัวกรองข้อมูล (คลิกเพื่อย่อ/ขยาย)", expanded=True):
-        st.markdown("<div class='filter-card'>", unsafe_allow_html=True)
+        st.markdown("<div id='filter-card' class='filter-card'>", unsafe_allow_html=True)
 
         # แถวบน: ช่วงวันที่ + ปุ่มลัด + Reset (Grid)
         st.markdown("<div class='filter-grid-row1'>", unsafe_allow_html=True)
@@ -471,7 +499,7 @@ def render_dashboard():
                               marker=dict(line=dict(color=('#fff' if not DARK else '#111'), width=2)),
                               pull=[0.02]*len(gsite))
             pie.update_layout(annotations=[dict(text=f"{total_tx:,}<br>รวม", x=0.5, y=0.5, showarrow=False, font=dict(size=18))])
-            plot(pie, key="pie_sitecontrol")
+            st.plotly_chart(pie, use_container_width=True, config={'displaylogo': False})
             figs['pie_sitecontrol'] = pie
         else:
             render_chart_placeholder('#### จำนวน Transaction ตามทีมภูมิภาค (กราฟวงกลม)', key="ph_site_pie")
@@ -505,7 +533,7 @@ def render_dashboard():
             ))
             ln.update_layout(xaxis_title='วัน/เดือน/ปี', yaxis_title='จำนวน',
                              xaxis_tickangle=-40, margin=dict(t=30,r=20,b=80,l=60))
-            plot(ln, key="line_daily_trend")
+            st.plotly_chart(ln, use_container_width=True, config={'displaylogo': False})
             figs['line_daily_trend'] = ln
         else:
             render_chart_placeholder('#### แนวโน้มรายวัน', key="ph_daily_trend")
@@ -545,7 +573,7 @@ def render_dashboard():
                                 marker=dict(line=dict(color=('#fff' if not DARK else '#111'), width=2)),
                                 pull=[0.02]*len(gtype_sum))
             pie_t.update_layout(annotations=[dict(text=f"{int(gtype_sum.transactions_count.sum()):,}<br>รวม", x=0.5, y=0.5, showarrow=False, font=dict(size=16))])
-            plot(pie_t, key="pie_hospital_type")
+            st.plotly_chart(pie_t, use_container_width=True, config={'displaylogo': False})
             figs['pie_hospital_type'] = pie_t
 
         with c2:
@@ -559,7 +587,7 @@ def render_dashboard():
             bar_t.update_layout(showlegend=False, margin=dict(l=160,r=40,t=30,b=30),
                                 yaxis_title='ประเภท', xaxis_title='Transactions',
                                 height=max(420, 50*len(gtype_for_bar)+180))
-            plot(bar_t, key="bar_hospital_type")
+            st.plotly_chart(bar_t, use_container_width=True, config={'displaylogo': False})
             figs['bar_hospital_type'] = bar_t
     else:
         render_chart_placeholder('#### สัดส่วน/ภาพรวมตามประเภทโรงพยาบาล', key="ph_type_summary")
@@ -590,7 +618,7 @@ def render_dashboard():
             yaxis_title='ชื่อโรงพยาบาล',
             xaxis_title='Transactions'
         )
-        plot(bar, key="bar_hospital_overview")
+        st.plotly_chart(bar, use_container_width=True, config={'displaylogo': False})
         figs['bar_hospital_overview'] = bar
     else:
         render_chart_placeholder('#### ภาพรวมต่อโรงพยาบาล', key="ph_hospital_overview")
@@ -634,7 +662,7 @@ def render_dashboard():
                 )
             )])
             figt.update_layout(margin=dict(l=0,r=0,t=0,b=0))
-            plot(figt, key="tbl_site_summary")
+            st.plotly_chart(figt, use_container_width=True, config={'displaylogo': False})
         else:
             st.info('ไม่มีข้อมูลตารางในช่วงที่เลือก')
     else:
@@ -1065,8 +1093,8 @@ def render_admin():
                     st.error('ยังไม่ตั้งค่า LINE Notify')
                 else:
                     try:
-                        summary_text = f"สรุป {start.strftime('%Y-%m')}\\n" \
-                                       f"รวมธุรกรรม: {int(mm['transactions_count'].sum()):,} รายการ\\n" \
+                        summary_text = f"สรุป {start.strftime('%Y-%m')}\n" \
+                                       f"รวมธุรกรรม: {int(mm['transactions_count'].sum()):,} รายการ\n" \
                                        f"โรงพยาบาล: {mm['hospital_id'].nunique()} แห่ง"
                         requests.post(
                             "https://notify-api.line.me/api/notify",
