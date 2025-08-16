@@ -220,27 +220,32 @@ st.markdown(f"""
   .main .block-container {{ padding-top: .25rem; padding-bottom: 1.6rem; }}
   h1 {{ margin: .25rem 0 .75rem 0 !important; line-height: 1.2; }}
 
+  /* === KPI Cards: fixed height & equal size === */
   .kpi-card {{
     background:var(--card-bg); border:1px solid var(--card-border); color:var(--card-text);
     border-radius:16px; padding:1rem 1.2rem; box-shadow:0 6px 18px rgba(0,0,0,.08);
+    height:132px;                      /* ทำให้สูงเท่ากันทุกใบ */
+    display:flex; flex-direction:column; justify-content:space-between;
   }}
-  .kpi-title {{ font-weight:600; opacity:.85; }}
-  .kpi-value {{ font-size:1.8rem; font-weight:700; margin-top:.25rem; }}
+  .kpi-title {{
+    font-weight:600; opacity:.85; line-height:1.25;
+    /* กันข้อความยาวดันการ์ดให้สูงเกิน: ตัดที่ 2 บรรทัด */
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+    min-height:2.6em;                  /* จองพื้นที่หัวเรื่องให้เท่ากัน */
+  }}
+  .kpi-value {{
+    font-size:1.8rem; font-weight:700; margin-top:.25rem; line-height:1;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }}
 
   .filter-sticky {{ position: sticky; top: .25rem; z-index: 5; }}
   .filter-card {{
     background:var(--card-bg); border:1px solid var(--card-border); color:var(--card-text);
     border-radius:16px; padding:14px; box-shadow:0 8px 22px rgba(0,0,0,.06);
   }}
-  .filter-card .stButton>button {{
-    width:100%; height:46px; border-radius:12px; font-weight:600;
-  }}
-  .filter-grid-row1 {{
-    display:grid; grid-template-columns: 1.4fr .45fr .45fr .6fr; gap:.75rem;
-  }}
-  .filter-grid-row2 {{
-    display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:.75rem; margin-top:.6rem;
-  }}
+  .filter-card .stButton>button {{ width:100%; height:46px; border-radius:12px; font-weight:600; }}
+  .filter-grid-row1 {{ display:grid; grid-template-columns: 1.4fr .45fr .45fr .6fr; gap:.75rem; }}
+  .filter-grid-row2 {{ display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:.75rem; margin-top:.6rem; }}
   .stExpander > div[role='button'] {{
     background:var(--card-bg); border:1px solid var(--card-border);
     border-radius:14px; padding:10px 14px;
@@ -251,6 +256,7 @@ st.markdown(f"""
   }}
 </style>
 """, unsafe_allow_html=True)
+
 
 # CSS ล้าง text-input ผี + กัน margin
 st.markdown("""
