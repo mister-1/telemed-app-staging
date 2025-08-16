@@ -64,14 +64,16 @@ TH_PROVINCES = {
 
 # ---------------- Supabase ----------------
 SUPABASE_URL = os.getenv('SUPABASE_URL', '')
-SUPABASE_KEY = os.getenv('SUPABASE_KEY', '')
+# ใช้ SERVICE KEY ก่อน ถ้าไม่มีค่อยใช้ KEY เดิม
+SUPABASE_SERVICE_KEY = os.getenv('SUPABASE_SERVICE_KEY') or os.getenv('SUPABASE_KEY', '')
 
 @st.cache_resource(show_spinner=False)
 def get_client() -> Client:
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        st.error('❌ Missing SUPABASE_URL or SUPABASE_KEY.'); st.stop()
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        st.error('❌ Missing SUPABASE_URL or SUPABASE_SERVICE_KEY.'); st.stop()
+    return create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 sb: Client = get_client()
+
 
 # ---------------- Utilities ----------------
 def hash_pw(pw: str) -> str: return bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
