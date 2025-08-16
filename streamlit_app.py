@@ -1,11 +1,19 @@
-# DashBoard Telemedicine — v4.8.0 (Full, with Filter Card & Sticky)
-# - Sidebar: PNG/CSV/Excel download
-# - Thai date (DD/MM/YYYY) date inputs
-# - Filter card (expander + sticky)
-# - Reduced top spacing
-# - Daily trend positioned between pie(site) and hospital type section
-# - Complete Admin console
-# NOTE: Requires requirements.txt with: streamlit, supabase, pandas, plotly, kaleido, pillow, bcrypt, openpyxl, requests
+# DashBoard Telemedicine — v4.9.0 (Full)
+# - ปรับกล่อง "ตัวกรองข้อมูล" ให้เป็นการ์ดสวย + Grid ย่อ/ขยายได้ และไม่มีแถบสีขาว
+# - Sidebar: PNG/CSV/Excel export (ข้อมูลที่กรองแล้ว)
+# - Thai date (DD/MM/YYYY) + ปุ่ม Today / เดือนนี้ + Reset
+# - ลดช่องว่างบนสุด, โหมดมืดรองรับสีกราฟ/การ์ด
+# - หน้า Admin ครบ: โรงพยาบาล, Transaction, ข้อมูลหลัก, ผู้ดูแล, รายงาน, ตั้งค่า & ข้อมูลตัวอย่าง
+# NOTE: ต้องมี requirements.txt อย่างน้อย:
+# streamlit==1.36.0
+# supabase
+# pandas
+# plotly
+# kaleido
+# pillow
+# bcrypt
+# openpyxl
+# requests
 
 import os, uuid, json, bcrypt, requests, random, io
 import pandas as pd
@@ -18,7 +26,7 @@ from typing import List, Dict
 import streamlit as st
 from supabase import create_client, Client
 
-APP_VERSION = "v4.8.0"
+APP_VERSION = "v4.9.0"
 
 # ---------------- Page / Theme ----------------
 st.set_page_config(page_title="DashBoard Telemedicine", page_icon="📊", layout="wide")
@@ -201,7 +209,7 @@ CARD_BG = "#0b1220" if DARK else "#FFFFFF"
 CARD_BORDER = "#1f2937" if DARK else "#E5E7EB"
 CARD_TXT = "#E5E7EB" if DARK else "#334155"
 
-# ---- CSS ----
+# ---- CSS (อัปเดตใหม่) ----
 st.markdown(f"""
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@400;600&display=swap');
@@ -212,8 +220,8 @@ st.markdown(f"""
   }}
   .stApp {{ font-family:'Kanit',system-ui; }}
 
-  /* ลดช่องว่างบน-ล่าง และลด margin ของ H1 */
-  .main .block-container {{ padding-top: 0.25rem; padding-bottom: 1.6rem; }}
+  /* ลดช่องว่างบน/ล่าง และหัวเรื่อง */
+  .main .block-container {{ padding-top: .25rem; padding-bottom: 1.6rem; }}
   h1 {{ margin: .25rem 0 .75rem 0 !important; line-height: 1.2; }}
 
   /* KPI Card */
@@ -224,14 +232,30 @@ st.markdown(f"""
   .kpi-title {{ font-weight:600; opacity:.85; }}
   .kpi-value {{ font-size:1.8rem; font-weight:700; margin-top:.25rem; }}
 
-  /* กล่องตัวกรอง (การ์ด) + sticky */
+  /* Sticky filter + card */
   .filter-sticky {{ position: sticky; top: .25rem; z-index: 5; }}
   .filter-card {{
     background:var(--card-bg); border:1px solid var(--card-border); color:var(--card-text);
-    border-radius:16px; padding:12px; box-shadow:0 8px 22px rgba(0,0,0,.06);
+    border-radius:16px; padding:14px; box-shadow:0 8px 22px rgba(0,0,0,.06);
   }}
 
-  /* แต่งหัว expander ให้เป็นการ์ด */
+  /* ซ่อน text-input ผี ที่บางครั้ง Streamlit สร้างใน expander */
+  .filter-card .stTextInput:first-child {{ display:none !important; height:0 !important; margin:0 !important; padding:0 !important; }}
+
+  /* ปุ่ม */
+  .filter-card .stButton>button {{
+    width:100%; height:46px; border-radius:12px; font-weight:600;
+  }}
+
+  /* Grid ของฟิลเตอร์ */
+  .filter-grid-row1 {{
+    display:grid; grid-template-columns: 1.4fr .45fr .45fr .6fr; gap:.75rem;
+  }}
+  .filter-grid-row2 {{
+    display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:.75rem; margin-top:.6rem;
+  }}
+
+  /* Expander header ให้เหมือนการ์ด */
   .stExpander > div[role='button'] {{
     background:var(--card-bg); border:1px solid var(--card-border);
     border-radius:14px; padding:10px 14px;
@@ -239,11 +263,6 @@ st.markdown(f"""
   .stExpander .streamlit-expanderContent {{
     background:var(--card-bg); border:1px solid var(--card-border);
     border-top:none; border-radius:0 0 14px 14px; padding-top:12px;
-  }}
-
-  /* ช่องว่างของ input ในการ์ดตัวกรอง */
-  .filter-card .stDateInput, .filter-card .stButton, .filter-card .stSelectbox, .filter-card .stMultiSelect {{
-    margin-bottom: .35rem;
   }}
 </style>
 """, unsafe_allow_html=True)
@@ -349,47 +368,58 @@ def render_dashboard():
         st.session_state['date_range'] = (today, today)
 
     st.markdown("<div class='filter-sticky'>", unsafe_allow_html=True)
-    with st.expander("🎛️ ตัวกรองข้อมูล (คลิกเพื่อย่อ/ขยาย)", expanded=True):
+    with st.expander("🧩 ตัวกรองข้อมูล (คลิกเพื่อย่อ/ขยาย)", expanded=True):
         st.markdown("<div class='filter-card'>", unsafe_allow_html=True)
 
-        r1c1, r1c2, r1c3 = st.columns([2, 1.2, 1.2])
-        with r1c1:
+        # แถวบน: ช่วงวันที่ + ปุ่มลัด + Reset (Grid)
+        st.markdown("<div class='filter-grid-row1'>", unsafe_allow_html=True)
+        col_d, col_tdy, col_mth, col_rst = st.columns([1.4, .45, .45, .6])
+        with col_d:
             today = date.today()
-            dr = st.date_input('📅 ช่วงวันที่', value=st.session_state['date_range'], format="DD/MM/YYYY")
+            dr = st.date_input('📅 ช่วงวันที่',
+                               value=st.session_state['date_range'],
+                               format="DD/MM/YYYY",
+                               key='filter_date_range')
             if isinstance(dr, tuple) and len(dr)==2:
                 st.session_state['date_range'] = dr
-        with r1c2:
-            cA, cB = st.columns(2)
-            with cA:
-                if st.button('Today', use_container_width=True):
-                    st.session_state['date_range'] = (today, today); rerun()
-            with cB:
-                if st.button('เดือนนี้', use_container_width=True):
-                    first = today.replace(day=1)
-                    st.session_state['date_range'] = (first, today); rerun()
-        with r1c3:
-            if st.button('↺ Reset ตัวกรอง', use_container_width=True):
+
+        with col_tdy:
+            if st.button('Today'):
+                st.session_state['date_range'] = (today, today); rerun()
+
+        with col_mth:
+            if st.button('เดือนนี้'):
+                first = today.replace(day=1)
+                st.session_state['date_range'] = (first, today); rerun()
+
+        with col_rst:
+            if st.button('↺ Reset ตัวกรอง'):
                 st.session_state['date_range'] = (today, today)
                 for k in ['hosp_sel','site_filter','region_filter','type_filter']:
                     st.session_state[k] = []
                 rerun()
+        st.markdown("</div>", unsafe_allow_html=True)  # end row1
 
-        r2a, r2b, r2c, r2d = st.columns([1.6, 1.2, 1.2, 1.4])
-        with r2a:
+        # แถวล่าง: 4 dropdown (Grid)
+        st.markdown("<div class='filter-grid-row2'>", unsafe_allow_html=True)
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
             all_names = sorted(hospitals_df['name'].dropna().unique().tolist()) if 'name' in hospitals_df.columns else []
             selected_hospitals = multiselect_dropdown("🏥 โรงพยาบาล", all_names, "hosp_sel", default_all=True)
-        with r2b:
+        with c2:
             selected_sites = multiselect_dropdown("🧭 ทีมภูมิภาค", SITE_CONTROL_CHOICES, "site_filter", default_all=True)
-        with r2c:
+        with c3:
             regions = sorted(hospitals_df['region'].dropna().unique().tolist()) if 'region' in hospitals_df.columns else []
             selected_regions = multiselect_dropdown("🗺️ ภูมิภาค", regions, "region_filter", default_all=True)
-        with r2d:
-            types = sorted(hospitals_df['hospital_type'].dropna().unique().tolist()) if 'hospital_type' in hospitals_df.columns \
+        with c4:
+            types = sorted(hospitals_df['hospital_type'].dropna().unique().tolist()) \
+                    if 'hospital_type' in hospitals_df.columns \
                     else get_master_names('hospital_types', DEFAULT_HOSPITAL_TYPES)
             selected_types = multiselect_dropdown("🏷️ ประเภทโรงพยาบาล", types, "type_filter", default_all=True)
+        st.markdown("</div>", unsafe_allow_html=True)  # end row2
 
-        st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)   # end filter-card
+    st.markdown("</div>", unsafe_allow_html=True)       # end sticky
 
     start_date, end_date = st.session_state['date_range']
 
@@ -614,8 +644,8 @@ def render_dashboard():
     subtitle = (
         f"ช่วง {th_date(start_date)} – {th_date(end_date)}  |  "
         f"โรงพยาบาล: "
-        f"{'ทั้งหมด' if not st.session_state.get('hosp_sel') or len(st.session_state['hosp_sel'])==len(all_names) else ', '.join(st.session_state['hosp_sel'])}  |  "
-        f"ทีม: {'ทั้งหมด' if not st.session_state.get('site_filter') or len(st.session_state['site_filter'])==len(SITE_CONTROL_CHOICES) else ', '.join(st.session_state['site_filter'])}"
+        f"{'ทั้งหมด' if not st.session_state.get('hosp_sel') else ', '.join(st.session_state['hosp_sel'])}  |  "
+        f"ทีม: {'ทั้งหมด' if not st.session_state.get('site_filter') else ', '.join(st.session_state['site_filter'])}"
     )
     png_bytes = build_dashboard_png(figs, "DashBoard Telemedicine", subtitle, dark=DARK)
 
