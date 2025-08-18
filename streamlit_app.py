@@ -1,20 +1,7 @@
-# DashBoard Telemedicine — v4.9.4 (Full)
-# - KPI cards equal height
-# - Daily trend: spline + labels on all lines (including backfill)
-# - Filter ghost text 'keyboard_*' removed
-# - KPI: Transaction สะสม (เดือนนี้ถึงวันที่เลือก)
-# - Admin CRUD works with SUPABASE_SERVICE_KEY
-#
-# Requirements (requirements.txt):
-# streamlit==1.48.1
-# supabase==2.5.1
-# pandas==2.2.2
-# plotly==5.23.0
-# kaleido==0.2.1
-# Pillow==10.3.0
-# bcrypt==4.2.0
-# openpyxl==3.1.3
-# requests==2.32.3
+# DashBoard Telemedicine — v4.9.5 (Full, Admin CRUD fix)
+# - Fix: เพิ่ม Transaction รายวัน บันทึก/อัปเดตได้จริง (เช็คซ้ำ hospital_id+date)
+# - Fix: เพิ่มผู้ดูแล (admin) ได้จริง + แสดง error ชัดเจน
+# - Keep: Daily trend spline + labels, KPI equal height, Sidebar download, Dark mode, Master data, Reports
 
 import os, uuid, json, bcrypt, requests, random, io
 import pandas as pd
@@ -26,8 +13,9 @@ from datetime import date, datetime, timedelta
 from typing import List, Dict
 import streamlit as st
 from supabase import create_client, Client
+from postgrest.exceptions import APIError
 
-APP_VERSION = "v4.9.4"
+APP_VERSION = "v4.9.5"
 
 # ---------------- Page / Theme ----------------
 st.set_page_config(page_title="DashBoard Telemedicine", page_icon="📊", layout="wide")
@@ -65,7 +53,6 @@ TH_PROVINCES = {
 
 # ---------------- Supabase ----------------
 SUPABASE_URL = os.getenv('SUPABASE_URL', '')
-# ใช้ SERVICE KEY ก่อน ถ้าไม่มีค่อยใช้ KEY เดิม (แต่ควรใช้ Service Role Key เสมอ)
 SUPABASE_SERVICE_KEY = os.getenv('SUPABASE_SERVICE_KEY') or os.getenv('SUPABASE_KEY', '')
 
 @st.cache_resource(show_spinner=False)
@@ -77,6 +64,28 @@ sb: Client = get_client()
 
 # ---------------- Utilities ----------------
 def hash_pw(pw: str) -> str: return bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
+
+def sb_exec(q, msg_ok=None, msg_fail='เกิดข้อผิดพลาด'):
+    """
+    Execute Supabase query and show detailed error in Streamlit if failed.
+    """
+    try:
+        res = q.execute()
+        if msg_ok: st.success(msg_ok)
+        return res
+    except APIError as e:
+        st.error(f'❌ {msg_fail}')
+        try:
+            # แสดงรายละเอียดจาก Supabase
+            detail = getattr(e, 'message', None) or str(e)
+            st.code(detail, language='json')
+        except Exception:
+            st.exception(e)
+        raise
+    except Exception as e:
+        st.error(f'❌ {msg_fail}')
+        st.exception(e)
+        raise
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_df(table: str) -> pd.DataFrame:
@@ -243,15 +252,9 @@ st.markdown(f"""
     background:var(--card-bg); border:1px solid var(--card-border); color:var(--card-text);
     border-radius:16px; padding:14px; box-shadow:0 8px 22px rgba(0,0,0,.06);
   }}
-  .filter-card .stButton>button {{
-    width:100%; height:46px; border-radius:12px; font-weight:600;
-  }}
-  .filter-grid-row1 {{
-    display:grid; grid-template-columns: 1.4fr .45fr .45fr .6fr; gap:.75rem;
-  }}
-  .filter-grid-row2 {{
-    display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:.75rem; margin-top:.6rem;
-  }}
+  .filter-card .stButton>button {{ width:100%; height:46px; border-radius:12px; font-weight:600; }}
+  .filter-grid-row1 {{ display:grid; grid-template-columns: 1.4fr .45fr .45fr .6fr; gap:.75rem; }}
+  .filter-grid-row2 {{ display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:.75rem; margin-top:.6rem; }}
   .stExpander > div[role='button'] {{
     background:var(--card-bg); border:1px solid var(--card-border);
     border-radius:14px; padding:10px 14px;
@@ -263,7 +266,7 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# CSS ล้าง text-input ผี + กัน margin
+# CSS ล้าง input ผีใน filter
 st.markdown("""
 <style>
   #filter-card input[type="text"],
@@ -279,7 +282,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def apply_ui_patches():
-    # JS ซ่อน keyboard_* และ input ผี (แบบครอบคลุม)
     st.components.v1.html("""
     <script>
       function wipeGhosts(){
@@ -329,7 +331,7 @@ with st.sidebar:
                 else:
                     st.error('ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง')
     else:
-        st.write(f"✅ {st.session_state.auth['user']}  ·  role: **{st.session_state.auth['role']}**")
+        st.write(f"✅ {st.session_state.auth['user']} · role: **{st.session_state.auth['role']}**")
         if st.button('Logout'): st.session_state.auth={'ok':False,'user':None,'role':'viewer'}; rerun()
 
 # ---------------- Router ----------------
@@ -377,7 +379,7 @@ def multiselect_dropdown(label: str, options: list, state_key: str, default_all:
         st.session_state[state_key] = sel
     return st.session_state[state_key]
 
-# ---------- Daily trend backfill (spline + labels on all lines) ----------
+# ---------- Daily trend ----------
 def render_daily_trend_with_backfill(df_selected: pd.DataFrame,
                                      df_all_no_date: pd.DataFrame,
                                      start_date: date, end_date: date,
@@ -424,7 +426,6 @@ def render_daily_trend_with_backfill(df_selected: pd.DataFrame,
 
     fig = go.Figure()
 
-    # Backfill lines
     if not daily_back.empty:
         fig.add_trace(go.Scatter(
             x=daily_back['date'].apply(thai_label),
@@ -452,7 +453,6 @@ def render_daily_trend_with_backfill(df_selected: pd.DataFrame,
             visible='legendonly'
         ))
 
-    # Selected-range lines
     if not daily_sel.empty:
         fig.add_trace(go.Scatter(
             x=daily_sel['date'].apply(thai_label),
@@ -560,7 +560,7 @@ def render_dashboard():
 
     start_date, end_date = st.session_state['date_range']
 
-    # ---- Merge & filter (สองชุด) ----
+    # ---- Merge & filter ----
     if not tx_all.empty:
         tx_all['date'] = pd.to_datetime(tx_all['date']).dt.date
         df_all_no_date = tx_all.merge(hospitals_df, left_on='hospital_id', right_on='id', how='left', suffixes=('','_h'))
@@ -568,7 +568,6 @@ def render_dashboard():
         df_all_no_date = pd.DataFrame(columns=['date','hospital_id','transactions_count','riders_active',
                                                'name','site_control','region','riders_count','hospital_type'])
 
-    # non-date filters
     if st.session_state.get('site_filter') and 'site_control' in df_all_no_date.columns:
         df_all_no_date = df_all_no_date[df_all_no_date['site_control'].isin(st.session_state['site_filter'])]
     if st.session_state.get('hosp_sel') and 'name' in df_all_no_date.columns:
@@ -578,15 +577,13 @@ def render_dashboard():
     if st.session_state.get('type_filter') and 'hospital_type' in df_all_no_date.columns:
         df_all_no_date = df_all_no_date[df_all_no_date['hospital_type'].isin(st.session_state['type_filter'])]
 
-    # date-filtered
     if not df_all_no_date.empty:
         df = df_all_no_date[(df_all_no_date['date'] >= start_date) & (df_all_no_date['date'] <= end_date)].copy()
     else:
         df = df_all_no_date.copy()
 
-    # ---- KPI cards ----
+    # ---- KPI ----
     st.markdown("### 📈 ภาพรวม")
-    # คำนวณเดือนนี้ถึงวันที่เลือก (อิง end_date) โดยใช้ตัวกรองอื่นร่วม
     month_start = end_date.replace(day=1)
     df_month_to_end = df_all_no_date[(df_all_no_date['date'] >= month_start) & (df_all_no_date['date'] <= end_date)]
     month_accum = int(df_month_to_end['transactions_count'].sum()) if not df_month_to_end.empty else 0
@@ -620,20 +617,20 @@ def render_dashboard():
                               pull=[0.02]*len(gsite))
             pie.update_layout(annotations=[dict(text=f"{int(gsite['transactions_count'].sum()):,}<br>รวม", x=0.5, y=0.5, showarrow=False, font=dict(size=18))])
             st.plotly_chart(pie, use_container_width=True, config={'displaylogo': False})
-            st.session_state['figs']['pie_sitecontrol'] = pie
+            st.session_state.setdefault('figs', {})['pie_sitecontrol'] = pie
         else:
             render_chart_placeholder('#### จำนวน Transaction ตามทีมภูมิภาค (กราฟวงกลม)', key="ph_site_pie")
     else:
         render_chart_placeholder('#### จำนวน Transaction ตามทีมภูมิภาค (กราฟวงกลม)', key="ph_site_pie")
 
-    # ---- Daily Trend (with backfill & labels) ----
+    # ---- Daily Trend ----
     render_daily_trend_with_backfill(df_selected=df,
                                      df_all_no_date=df_all_no_date,
                                      start_date=start_date,
                                      end_date=end_date,
                                      dark=DARK)
 
-    # ---- By Hospital Type (summary) ----
+    # ---- By Hospital Type ----
     st.markdown('### 🏷️ ประเภทโรงพยาบาล (สรุป)')
     if not df.empty and 'hospital_type' in df.columns and df['hospital_type'].notna().any():
         gtype_sum = df.groupby('hospital_type', dropna=True).agg(
@@ -667,7 +664,7 @@ def render_dashboard():
                                 pull=[0.02]*len(gtype_sum))
             pie_t.update_layout(annotations=[dict(text=f"{int(gtype_sum.transactions_count.sum()):,}<br>รวม", x=0.5, y=0.5, showarrow=False, font=dict(size=16))])
             st.plotly_chart(pie_t, use_container_width=True, config={'displaylogo': False})
-            st.session_state['figs']['pie_hospital_type'] = pie_t
+            st.session_state.setdefault('figs', {})['pie_hospital_type'] = pie_t
 
         with c2:
             st.markdown('#### ภาพรวมตามประเภทโรงพยาบาล')
@@ -681,7 +678,7 @@ def render_dashboard():
                                 yaxis_title='ประเภท', xaxis_title='Transactions',
                                 height=max(420, 50*len(gtype_for_bar)+180))
             st.plotly_chart(bar_t, use_container_width=True, config={'displaylogo': False})
-            st.session_state['figs']['bar_hospital_type'] = bar_t
+            st.session_state.setdefault('figs', {})['bar_hospital_type'] = bar_t
     else:
         render_chart_placeholder('#### สัดส่วน/ภาพรวมตามประเภทโรงพยาบาล', key="ph_type_summary")
 
@@ -711,7 +708,7 @@ def render_dashboard():
             xaxis_title='Transactions'
         )
         st.plotly_chart(bar, use_container_width=True, config={'displaylogo': False})
-        st.session_state['figs']['bar_hospital_overview'] = bar
+        st.session_state.setdefault('figs', {})['bar_hospital_overview'] = bar
     else:
         render_chart_placeholder('#### ภาพรวมต่อโรงพยาบาล', key="ph_hospital_overview")
 
@@ -767,7 +764,7 @@ def render_dashboard():
         f"{'ทั้งหมด' if not st.session_state.get('hosp_sel') else ', '.join(st.session_state['hosp_sel'])}  |  "
         f"ทีม: {'ทั้งหมด' if not st.session_state.get('site_filter') else ', '.join(st.session_state['site_filter'])}"
     )
-    png_bytes = build_dashboard_png(st.session_state['figs'], "DashBoard Telemedicine", subtitle, dark=DARK)
+    png_bytes = build_dashboard_png(st.session_state.get('figs', {}), "DashBoard Telemedicine", subtitle, dark=DARK)
 
     if not df.empty:
         df_csv = df.copy()
@@ -786,7 +783,7 @@ def render_dashboard():
         'excel_bytes': excel_bytes
     }
 
-# ====================== ADMIN (จัดการข้อมูล) ======================
+# ====================== ADMIN ======================
 def render_admin():
     apply_ui_patches()
     if not st.session_state.auth['ok']:
@@ -848,16 +845,21 @@ def render_admin():
                                'service_models':models,
                                'riders_count':int(riders_count)}
                     try:
-                        if edit_mode: sb.table('hospitals').update(payload).eq('id', row['id']).execute()
-                        else: sb.table('hospitals').insert(payload).execute()
-                        st.success('บันทึกเรียบร้อย'); load_df.clear(); rerun()
+                        if edit_mode: sb_exec(sb.table('hospitals').update(payload).eq('id', row['id']),
+                                              'บันทึกเรียบร้อย', 'บันทึกโรงพยาบาลไม่สำเร็จ')
+                        else: sb_exec(sb.table('hospitals').insert(payload),
+                                      'บันทึกเรียบร้อย', 'บันทึกโรงพยาบาลไม่สำเร็จ')
+                        load_df.clear(); rerun()
                     except Exception:
-                        st.warning('⚠️ อาจยังไม่มีคอลัมน์ hospital_type หรือ service_models ในตาราง hospitals')
+                        st.warning('⚠️ อาจยังไม่มีคอลัมน์ hospital_type/service_models ในตาราง hospitals')
                         try:
                             payload_fallback = dict(payload)
-                            payload_fallback.pop('hospital_type', None); payload_fallback.pop('service_models', None)
-                            if edit_mode: sb.table('hospitals').update(payload_fallback).eq('id', row['id']).execute()
-                            else: sb.table('hospitals').insert(payload_fallback).execute()
+                            payload_fallback.pop('hospital_type', None)
+                            payload_fallback.pop('service_models', None)
+                            if edit_mode:
+                                sb_exec(sb.table('hospitals').update(payload_fallback).eq('id', row['id']))
+                            else:
+                                sb_exec(sb.table('hospitals').insert(payload_fallback))
                             st.success('บันทึกส่วนที่ระบบรองรับแล้ว'); load_df.clear(); rerun()
                         except Exception:
                             st.error('บันทึกไม่สำเร็จ')
@@ -867,8 +869,8 @@ def render_admin():
                                       disabled=not can_edit)
                 if edit_mode and st.button('🗑️ ยืนยันลบ', disabled=(not can_edit or not confirm)):
                     try:
-                        sb.table('transactions').delete().eq('hospital_id', row['id']).execute()
-                        sb.table('hospitals').delete().eq('id', row['id']).execute()
+                        sb_exec(sb.table('transactions').delete().eq('hospital_id', row['id']))
+                        sb_exec(sb.table('hospitals').delete().eq('id', row['id']))
                         st.success('ลบเรียบร้อย'); load_df.clear(); rerun()
                     except Exception:
                         st.error('ลบไม่สำเร็จ')
@@ -904,19 +906,38 @@ def render_admin():
                             rc = int(rc_series.iloc[0]) if not rc_series.empty else 0
                             if riders_active > rc:
                                 st.error('Rider Active มากกว่า Capacity'); st.stop()
-                            sb.table('transactions').upsert(
-                                {
-                                  'hospital_id':hid,
-                                  'date':tx_date.isoformat(),
-                                  'transactions_count':int(tx_num),
-                                  'riders_active':int(riders_active),
-                                  'created_at': datetime.now().isoformat()
-                                },
-                                on_conflict=['hospital_id','date']
-                            ).execute()
-                            st.success('เพิ่ม/อัปเดตข้อมูลแล้ว'); load_df.clear(); rerun()
+
+                            # --- เช็คซ้ำก่อน ---
+                            existing = sb_exec(
+                                sb.table('transactions').select('id').eq('hospital_id', hid).eq('date', tx_date.isoformat()).limit(1),
+                                msg_fail='ตรวจสอบรายการซ้ำไม่สำเร็จ'
+                            ).data
+                            if existing:
+                                # update
+                                tx_id = existing[0]['id']
+                                sb_exec(
+                                    sb.table('transactions').update({
+                                        'transactions_count':int(tx_num),
+                                        'riders_active':int(riders_active)
+                                    }).eq('id', tx_id),
+                                    msg_ok='อัปเดตข้อมูลแล้ว', msg_fail='อัปเดตไม่สำเร็จ'
+                                )
+                            else:
+                                # insert
+                                sb_exec(
+                                    sb.table('transactions').insert({
+                                        'id': str(uuid.uuid4()),
+                                        'hospital_id':hid,
+                                        'date':tx_date.isoformat(),
+                                        'transactions_count':int(tx_num),
+                                        'riders_active':int(riders_active),
+                                        'created_at': datetime.now().isoformat()
+                                    }),
+                                    msg_ok='บันทึกข้อมูลแล้ว', msg_fail='บันทึกไม่สำเร็จ'
+                                )
+                            load_df.clear(); rerun()
                         except Exception:
-                            st.error('บันทึกไม่สำเร็จ')
+                            pass
                 with cbtn2:
                     if st.button('ยกเลิก', key='cancel_add_tx'):
                         st.session_state['open_add_tx'] = False
@@ -942,21 +963,37 @@ def render_admin():
                                     hid = str(uuid.uuid4())
                                     payload={'id':hid,'name':hname,'province':'กรุงเทพมหานคร','region':TH_PROVINCES['กรุงเทพมหานคร'],
                                              'site_control':'ทีมเหนือ','system_type':'WebPortal','riders_count':0}
-                                    try: sb.table('hospitals').insert(payload).execute(); name2id[hname]=hid
-                                    except Exception: pass
-                                if not hid: 
-                                    st.warning(f'ข้าม: ไม่พบโรงพยาบาล {hname}'); 
+                                    try:
+                                        sb_exec(sb.table('hospitals').insert(payload))
+                                        name2id[hname]=hid
+                                    except Exception:
+                                        pass
+                                if not hid:
+                                    st.warning(f'ข้าม: ไม่พบโรงพยาบาล {hname}')
                                     continue
-                                sb.table('transactions').upsert(
-                                    {
-                                      'hospital_id':hid,
-                                      'date':dt.isoformat(),
-                                      'transactions_count':tx,
-                                      'riders_active':ra,
-                                      'created_at': datetime.now().isoformat()
-                                    },
-                                    on_conflict=['hospital_id','date']
-                                ).execute()
+                                # upsert แบบ manual (เช็คซ้ำก่อน)
+                                existing = sb_exec(
+                                    sb.table('transactions').select('id').eq('hospital_id', hid).eq('date', dt.isoformat()).limit(1),
+                                    msg_fail='ตรวจสอบรายการซ้ำไม่สำเร็จ'
+                                ).data
+                                if existing:
+                                    sb_exec(
+                                        sb.table('transactions').update({
+                                            'transactions_count':tx,
+                                            'riders_active':ra
+                                        }).eq('id', existing[0]['id'])
+                                    )
+                                else:
+                                    sb_exec(
+                                        sb.table('transactions').insert({
+                                            'id': str(uuid.uuid4()),
+                                            'hospital_id':hid,
+                                            'date':dt.isoformat(),
+                                            'transactions_count':tx,
+                                            'riders_active':ra,
+                                            'created_at': datetime.now().isoformat()
+                                        })
+                                    )
                             st.success('นำเข้าเสร็จสิ้น'); load_df.clear(); rerun()
                     except Exception:
                         st.error('นำเข้าไม่สำเร็จ')
@@ -998,23 +1035,27 @@ def render_admin():
                         with c1:
                             if st.button('บันทึกการแก้ไข', key='save_edit_tx', disabled=not can_edit):
                                 try:
-                                    sb.table('transactions').update({
-                                        'transactions_count':int(nsel),'riders_active':int(rsel)
-                                    }).eq('id', row['id']).execute()
+                                    sb_exec(
+                                        sb.table('transactions').update({
+                                            'transactions_count':int(nsel),'riders_active':int(rsel)
+                                        }).eq('id', row['id']),
+                                        msg_ok='อัปเดตแล้ว', msg_fail='อัปเดตไม่สำเร็จ'
+                                    )
                                     for k in ['open_edit_tx','edit_target_h','edit_target_d']:
                                         st.session_state.pop(k, None)
-                                    st.success('อัปเดตแล้ว'); load_df.clear(); rerun()
+                                    load_df.clear(); rerun()
                                 except Exception:
-                                    st.error('อัปเดตไม่สำเร็จ')
+                                    pass
                         with c2:
                             if st.button('ลบรายการนี้', key='del_edit_tx', disabled=not can_edit):
                                 try:
-                                    sb.table('transactions').delete().eq('id', row['id']).execute()
+                                    sb_exec(sb.table('transactions').delete().eq('id', row['id']),
+                                           msg_ok='ลบแล้ว', msg_fail='ลบไม่สำเร็จ')
                                     for k in ['open_edit_tx','edit_target_h','edit_target_d']:
                                         st.session_state.pop(k, None)
-                                    st.success('ลบแล้ว'); load_df.clear(); rerun()
+                                    load_df.clear(); rerun()
                                 except Exception:
-                                    st.error('ลบไม่สำเร็จ')
+                                    pass
 
             st.markdown('#### รายการ Transaction (มุมมอง)')
             if raw_tx.empty:
@@ -1091,46 +1132,64 @@ def render_admin():
         else:
             st.info('ยังไม่มีข้อมูลผู้ดูแล หรือไม่มีตาราง admins')
 
-        with st.expander('➕ เพิ่มผู้ดูแล'):
-            nu = st.text_input('Username ใหม่'); npw = st.text_input('Password', type='password')
-            nrole = st.selectbox('Role', ['admin','editor','viewer'])
-            if st.button('เพิ่มผู้ดูแล'):
-                if not nu or not npw: st.error('กรอกให้ครบ'); st.stop()
+        with st.expander('➕ เพิ่มผู้ดูแล', expanded=True):
+            nu = st.text_input('Username ใหม่', key='new_admin_user')
+            npw = st.text_input('Password', type='password', key='new_admin_pw')
+            nrole = st.selectbox('Role', ['admin','editor','viewer'], key='new_admin_role')
+            if st.button('เพิ่มผู้ดูแล', key='btn_add_admin'):
+                if not nu or not npw:
+                    st.error('กรอก Username/Password ให้ครบ'); st.stop()
                 try:
-                    if not admins_df.empty and any(admins_df['username'].str.lower()==nu.lower()):
-                        st.error('มี username นี้แล้ว'); st.stop()
-                    sb.table('admins').insert({'id':str(uuid.uuid4()),'username':nu,'password_hash':hash_pw(npw),'role':nrole}).execute()
-                    st.success('เพิ่มแล้ว'); load_df.clear(); rerun()
+                    dup = sb_exec(
+                        sb.table('admins').select('username').eq('username', nu).limit(1),
+                        msg_fail='ตรวจสอบผู้ใช้ซ้ำไม่สำเร็จ'
+                    ).data
+                    if dup:
+                        st.error('มี Username นี้อยู่แล้ว'); st.stop()
+                    sb_exec(
+                        sb.table('admins').insert({
+                            'id': str(uuid.uuid4()),
+                            'username': nu,
+                            'password_hash': hash_pw(npw),
+                            'role': nrole
+                        }),
+                        msg_ok='เพิ่มผู้ดูแลแล้ว', msg_fail='เพิ่มผู้ดูแลไม่สำเร็จ'
+                    )
+                    load_df.clear(); rerun()
                 except Exception:
-                    st.error('เพิ่มไม่สำเร็จ')
+                    pass
+
         with st.expander('🔁 เปลี่ยนรหัสผ่าน / เปลี่ยนบทบาท / ลบผู้ดูแล'):
             if not admins_df.empty:
-                selu = st.selectbox('เลือกผู้ใช้', admins_df['username'].tolist())
-                newpw = st.text_input('รหัสผ่านใหม่', type='password')
-                newrole = st.selectbox('Role ใหม่', ['admin','editor','viewer'])
+                selu = st.selectbox('เลือกผู้ใช้', admins_df['username'].tolist(), key='adm_sel_user')
+                newpw = st.text_input('รหัสผ่านใหม่', type='password', key='adm_new_pw')
+                newrole = st.selectbox('Role ใหม่', ['admin','editor','viewer'], key='adm_new_role')
                 c1,c2,c3 = st.columns(3)
                 with c1:
-                    if st.button('เปลี่ยนรหัสผ่าน'):
+                    if st.button('เปลี่ยนรหัสผ่าน', key='btn_admin_pw'):
                         if not newpw: st.error('กรุณากรอกรหัส'); st.stop()
                         try:
-                            sb.table('admins').update({'password_hash':hash_pw(newpw)}).eq('username', selu).execute()
-                            st.success('เปลี่ยนแล้ว'); load_df.clear(); rerun()
+                            sb_exec(sb.table('admins').update({'password_hash':hash_pw(newpw)}).eq('username', selu),
+                                    msg_ok='เปลี่ยนแล้ว', msg_fail='เปลี่ยนรหัสผ่านไม่สำเร็จ')
+                            load_df.clear(); rerun()
                         except Exception:
-                            st.error('เปลี่ยนไม่สำเร็จ')
+                            pass
                 with c2:
-                    if st.button('อัปเดตบทบาท'):
+                    if st.button('อัปเดตบทบาท', key='btn_admin_role'):
                         try:
-                            sb.table('admins').update({'role':newrole}).eq('username', selu).execute()
-                            st.success('อัปเดตบทบาทแล้ว'); load_df.clear(); rerun()
+                            sb_exec(sb.table('admins').update({'role':newrole}).eq('username', selu),
+                                    msg_ok='อัปเดตบทบาทแล้ว', msg_fail='อัปเดตบทบาทไม่สำเร็จ')
+                            load_df.clear(); rerun()
                         except Exception:
-                            st.error('อัปเดตไม่สำเร็จ')
+                            pass
                 with c3:
-                    if st.button('ลบผู้ใช้'):
+                    if st.button('ลบผู้ใช้', key='btn_admin_del'):
                         try:
-                            sb.table('admins').delete().eq('username', selu).execute()
-                            st.success('ลบแล้ว'); load_df.clear(); rerun()
+                            sb_exec(sb.table('admins').delete().eq('username', selu),
+                                    msg_ok='ลบแล้ว', msg_fail='ลบผู้ใช้ไม่สำเร็จ')
+                            load_df.clear(); rerun()
                         except Exception:
-                            st.error('ลบไม่สำเร็จ')
+                            pass
 
     # ---- Reports ----
     with tabs[4]:
@@ -1217,20 +1276,22 @@ def render_admin():
                                       value=int(targets.get('utilization_alert_pct',90)))
         if st.button('บันทึกเป้าหมาย'):
             try:
-                sb.table('settings').upsert({'key':'targets','value':{'daily_transactions':int(daily_target),'utilization_alert_pct':int(util_th)}}).execute()
-                st.success('บันทึกแล้ว'); load_df.clear()
+                sb_exec(sb.table('settings').upsert({'key':'targets','value':{'daily_transactions':int(daily_target),'utilization_alert_pct':int(util_th)}}),
+                        msg_ok='บันทึกแล้ว', msg_fail='บันทึกตั้งค่าไม่สำเร็จ')
+                load_df.clear()
             except Exception:
-                st.warning('ยังไม่มีตาราง settings ในฐานข้อมูล')
+                pass
 
         st.markdown('#### LINE Notify')
         en_line = st.checkbox('เปิดใช้ LINE Notify', value=bool(line_cfg.get('enabled',False)))
         token = st.text_input('LINE Notify Token', value=line_cfg.get('token',''), type='password')
         if st.button('บันทึก LINE Notify'):
             try:
-                sb.table('settings').upsert({'key':'line_notify','value':{'enabled':bool(en_line),'token':token.strip()}}).execute()
-                st.success('บันทึกแล้ว'); load_df.clear()
+                sb_exec(sb.table('settings').upsert({'key':'line_notify','value':{'enabled':bool(en_line),'token':token.strip()}}),
+                        msg_ok='บันทึกแล้ว', msg_fail='บันทึก LINE Notify ไม่สำเร็จ')
+                load_df.clear()
             except Exception:
-                st.warning('ยังไม่มีตาราง settings ในฐานข้อมูล')
+                pass
 
         st.markdown('#### ตาราง settings (Raw)')
         if not settings_df.empty:
@@ -1259,10 +1320,10 @@ def render_admin():
                                  'riders_count':rc,'hospital_type':ht}
                         if not ex:
                             try:
-                                sb.table('hospitals').insert(payload).execute()
+                                sb_exec(sb.table('hospitals').insert(payload))
                             except Exception:
                                 payload.pop('hospital_type', None); payload.pop('service_models', None)
-                                sb.table('hospitals').insert(payload).execute()
+                                sb_exec(sb.table('hospitals').insert(payload))
                         name2id[n]=hid
                     except Exception: pass
                 days=[date.today()-timedelta(days=2),date.today()-timedelta(days=1),date.today()]
@@ -1273,15 +1334,15 @@ def render_admin():
                                      'transactions_count':random.randint(20,60),'riders_active':random.randint(2,7),
                                      'created_at': datetime.now().isoformat()})
                 if rows:
-                    try: sb.table('transactions').insert(rows).execute(); st.success('เติมข้อมูลแล้ว'); load_df.clear(); rerun()
+                    try: sb_exec(sb.table('transactions').insert(rows)); st.success('เติมข้อมูลแล้ว'); load_df.clear(); rerun()
                     except Exception: st.error('เติมข้อมูลไม่สำเร็จ')
         with b:
             if st.button('ลบข้อมูลตัวอย่าง'):
                 try:
                     targets=['รพ.หาดใหญ่','รพ.เชียงใหม่','รพ.ขอนแก่น','รพ.ชลบุรี','รพ.นครศรีธรรมราช']
                     ids=[r['id'] for r in sb.table('hospitals').select('id').in_('name',targets).execute().data]
-                    for hid in ids: sb.table('transactions').delete().eq('hospital_id',hid).execute()
-                    if ids: sb.table('hospitals').delete().in_('id',ids).execute()
+                    for hid in ids: sb_exec(sb.table('transactions').delete().eq('hospital_id',hid))
+                    if ids: sb_exec(sb.table('hospitals').delete().in_('id',ids))
                     st.success('ลบแล้ว'); load_df.clear(); rerun()
                 except Exception:
                     st.error('ลบข้อมูลตัวอย่างไม่สำเร็จ')
