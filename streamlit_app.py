@@ -1,10 +1,11 @@
-# DashBoard Telemedicine — v4.9.3 (Full)
-# - Daily trend: โค้ง (spline) + แสดงตัวเลขทุกเส้น (รวมเส้นย้อนหลัง)
-# - ฟิลเตอร์: ซ่อนข้อความ keyboard_* ที่โผล่มาทับ expander/popover อย่างครอบคลุม
-# - KPI ใหม่: "Transaction สะสม (เดือนนี้ถึงวันที่เลือก)" ใช้ตัวกรองทั้งหมด (ยกเว้นวันตามสูตร)
-# - โหมดมืด/พาสเทล, Sidebar export PNG/CSV/Excel, หน้า Admin ครบ
+# DashBoard Telemedicine — v4.9.4 (Full)
+# - KPI cards equal height
+# - Daily trend: spline + labels on all lines (including backfill)
+# - Filter ghost text 'keyboard_*' removed
+# - KPI: Transaction สะสม (เดือนนี้ถึงวันที่เลือก)
+# - Admin CRUD works with SUPABASE_SERVICE_KEY
 #
-# requirements.txt (แนะนำ):
+# Requirements (requirements.txt):
 # streamlit==1.48.1
 # supabase==2.5.1
 # pandas==2.2.2
@@ -26,7 +27,7 @@ from typing import List, Dict
 import streamlit as st
 from supabase import create_client, Client
 
-APP_VERSION = "v4.9.3"
+APP_VERSION = "v4.9.4"
 
 # ---------------- Page / Theme ----------------
 st.set_page_config(page_title="DashBoard Telemedicine", page_icon="📊", layout="wide")
@@ -64,7 +65,7 @@ TH_PROVINCES = {
 
 # ---------------- Supabase ----------------
 SUPABASE_URL = os.getenv('SUPABASE_URL', '')
-# ใช้ SERVICE KEY ก่อน ถ้าไม่มีค่อยใช้ KEY เดิม
+# ใช้ SERVICE KEY ก่อน ถ้าไม่มีค่อยใช้ KEY เดิม (แต่ควรใช้ Service Role Key เสมอ)
 SUPABASE_SERVICE_KEY = os.getenv('SUPABASE_SERVICE_KEY') or os.getenv('SUPABASE_KEY', '')
 
 @st.cache_resource(show_spinner=False)
@@ -73,7 +74,6 @@ def get_client() -> Client:
         st.error('❌ Missing SUPABASE_URL or SUPABASE_SERVICE_KEY.'); st.stop()
     return create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 sb: Client = get_client()
-
 
 # ---------------- Utilities ----------------
 def hash_pw(pw: str) -> str: return bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
@@ -226,14 +226,12 @@ st.markdown(f"""
   .kpi-card {{
     background:var(--card-bg); border:1px solid var(--card-border); color:var(--card-text);
     border-radius:16px; padding:1rem 1.2rem; box-shadow:0 6px 18px rgba(0,0,0,.08);
-    height:132px;                      /* ทำให้สูงเท่ากันทุกใบ */
-    display:flex; flex-direction:column; justify-content:space-between;
+    height:132px; display:flex; flex-direction:column; justify-content:space-between;
   }}
   .kpi-title {{
     font-weight:600; opacity:.85; line-height:1.25;
-    /* กันข้อความยาวดันการ์ดให้สูงเกิน: ตัดที่ 2 บรรทัด */
     display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
-    min-height:2.6em;                  /* จองพื้นที่หัวเรื่องให้เท่ากัน */
+    min-height:2.6em;
   }}
   .kpi-value {{
     font-size:1.8rem; font-weight:700; margin-top:.25rem; line-height:1;
@@ -245,9 +243,15 @@ st.markdown(f"""
     background:var(--card-bg); border:1px solid var(--card-border); color:var(--card-text);
     border-radius:16px; padding:14px; box-shadow:0 8px 22px rgba(0,0,0,.06);
   }}
-  .filter-card .stButton>button {{ width:100%; height:46px; border-radius:12px; font-weight:600; }}
-  .filter-grid-row1 {{ display:grid; grid-template-columns: 1.4fr .45fr .45fr .6fr; gap:.75rem; }}
-  .filter-grid-row2 {{ display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:.75rem; margin-top:.6rem; }}
+  .filter-card .stButton>button {{
+    width:100%; height:46px; border-radius:12px; font-weight:600;
+  }}
+  .filter-grid-row1 {{
+    display:grid; grid-template-columns: 1.4fr .45fr .45fr .6fr; gap:.75rem;
+  }}
+  .filter-grid-row2 {{
+    display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:.75rem; margin-top:.6rem;
+  }}
   .stExpander > div[role='button'] {{
     background:var(--card-bg); border:1px solid var(--card-border);
     border-radius:14px; padding:10px 14px;
@@ -258,7 +262,6 @@ st.markdown(f"""
   }}
 </style>
 """, unsafe_allow_html=True)
-
 
 # CSS ล้าง text-input ผี + กัน margin
 st.markdown("""
@@ -276,7 +279,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def apply_ui_patches():
-    # JS ซ่อน keyboard_* และ input ผี (แบบครอบคลุมกว่าเดิม)
+    # JS ซ่อน keyboard_* และ input ผี (แบบครอบคลุม)
     st.components.v1.html("""
     <script>
       function wipeGhosts(){
@@ -292,13 +295,11 @@ def apply_ui_patches():
             }
           });
         }
-        // ซ่อนทุก element ที่มีข้อความขึ้นต้น/ประกอบด้วย 'keyboard'
         const scan = (el)=>((el.innerText||'').toLowerCase().includes('keyboard'));
         document.querySelectorAll('*').forEach(el=>{
           try{
             const ar = (el.getAttribute('aria-label')||'').toLowerCase();
             if(scan(el) || ar.includes('keyboard')){
-              // อย่าซ่อนปุ่มหลักๆ: ถ้าเป็นปุ่ม expander ทั้งก้อน ไม่ซ่อน
               const role = el.getAttribute('role')||'';
               if(role==='button' && el.closest('.stExpander')) return;
               el.style.display='none';
@@ -376,7 +377,7 @@ def multiselect_dropdown(label: str, options: list, state_key: str, default_all:
         st.session_state[state_key] = sel
     return st.session_state[state_key]
 
-# ---------- Daily trend backfill (with labels on all lines) ----------
+# ---------- Daily trend backfill (spline + labels on all lines) ----------
 def render_daily_trend_with_backfill(df_selected: pd.DataFrame,
                                      df_all_no_date: pd.DataFrame,
                                      start_date: date, end_date: date,
@@ -423,7 +424,7 @@ def render_daily_trend_with_backfill(df_selected: pd.DataFrame,
 
     fig = go.Figure()
 
-    # Backfill lines (dotted + labels)
+    # Backfill lines
     if not daily_back.empty:
         fig.add_trace(go.Scatter(
             x=daily_back['date'].apply(thai_label),
@@ -448,10 +449,10 @@ def render_daily_trend_with_backfill(df_selected: pd.DataFrame,
             line=dict(width=1.5, dash='dot'),
             line_shape='spline',
             opacity=0.7,
-            visible='legendonly'  # ยังซ่อนไว้เป็นค่าเริ่มต้น แต่มี label พร้อม
+            visible='legendonly'
         ))
 
-    # Selected-range lines (main + labels)
+    # Selected-range lines
     if not daily_sel.empty:
         fig.add_trace(go.Scatter(
             x=daily_sel['date'].apply(thai_label),
@@ -472,7 +473,7 @@ def render_daily_trend_with_backfill(df_selected: pd.DataFrame,
             textposition='top center',
             line=dict(width=2, dash='dot'),
             line_shape='spline',
-            visible='legendonly'  # ซ่อนเส้นรองไว้ก่อน
+            visible='legendonly'
         ))
 
     fig.update_layout(
@@ -585,7 +586,7 @@ def render_dashboard():
 
     # ---- KPI cards ----
     st.markdown("### 📈 ภาพรวม")
-    # คำนวณเดือนนี้ถึงวันที่เลือก (อิง end_date)
+    # คำนวณเดือนนี้ถึงวันที่เลือก (อิง end_date) โดยใช้ตัวกรองอื่นร่วม
     month_start = end_date.replace(day=1)
     df_month_to_end = df_all_no_date[(df_all_no_date['date'] >= month_start) & (df_all_no_date['date'] <= end_date)]
     month_accum = int(df_month_to_end['transactions_count'].sum()) if not df_month_to_end.empty else 0
@@ -625,7 +626,7 @@ def render_dashboard():
     else:
         render_chart_placeholder('#### จำนวน Transaction ตามทีมภูมิภาค (กราฟวงกลม)', key="ph_site_pie")
 
-    # ---- Daily Trend (with backfill & labels on all lines) ----
+    # ---- Daily Trend (with backfill & labels) ----
     render_daily_trend_with_backfill(df_selected=df,
                                      df_all_no_date=df_all_no_date,
                                      start_date=start_date,
@@ -854,8 +855,7 @@ def render_admin():
                         st.warning('⚠️ อาจยังไม่มีคอลัมน์ hospital_type หรือ service_models ในตาราง hospitals')
                         try:
                             payload_fallback = dict(payload)
-                            payload_fallback.pop('hospital_type', None)
-                            payload_fallback.pop('service_models', None)
+                            payload_fallback.pop('hospital_type', None); payload_fallback.pop('service_models', None)
                             if edit_mode: sb.table('hospitals').update(payload_fallback).eq('id', row['id']).execute()
                             else: sb.table('hospitals').insert(payload_fallback).execute()
                             st.success('บันทึกส่วนที่ระบบรองรับแล้ว'); load_df.clear(); rerun()
