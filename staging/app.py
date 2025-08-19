@@ -1,6 +1,5 @@
 import os, importlib, streamlit as st
 
-# โหลด secrets + ทำ alias ให้รองรับทั้ง SERVICE_KEY และ SERVICE_ROLE_KEY
 for k in ("SUPABASE_URL","SUPABASE_ANON_KEY",
           "SUPABASE_SERVICE_KEY","SUPABASE_SERVICE_ROLE_KEY","ENV"):
     v = st.secrets.get(k)
@@ -11,7 +10,6 @@ if os.getenv("SUPABASE_SERVICE_ROLE_KEY") and not os.getenv("SUPABASE_SERVICE_KE
 if os.getenv("SUPABASE_SERVICE_KEY") and not os.getenv("SUPABASE_SERVICE_ROLE_KEY"):
     os.environ["SUPABASE_SERVICE_ROLE_KEY"] = os.environ["SUPABASE_SERVICE_KEY"]
 
-# import โมดูลหลักของโปรดักชัน แล้วเรียก main/app/run ถ้ามี
 mod = importlib.import_module("streamlit_app")
 for fn in ("main", "app", "run"):
     if hasattr(mod, fn) and callable(getattr(mod, fn)):
