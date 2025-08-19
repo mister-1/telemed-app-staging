@@ -1,3 +1,8 @@
+import os, streamlit as st
+for k in ("SUPABASE_URL","SUPABASE_ANON_KEY","SUPABASE_SERVICE_ROLE_KEY","ENV"):
+    if k in st.secrets and not os.getenv(k):
+        os.environ[k] = str(st.secrets[k])
+
 # DashBoard Telemedicine — v4.9.5 (Full, Admin CRUD fix)
 # - Fix: เพิ่ม Transaction รายวัน บันทึก/อัปเดตได้จริง (เช็คซ้ำ hospital_id+date)
 # - Fix: เพิ่มผู้ดูแล (admin) ได้จริง + แสดง error ชัดเจน
