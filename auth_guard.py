@@ -1,122 +1,146 @@
-# auth_guard.py  (v2) — single-source Sign-in (main only)
+# auth_guard.py
+# ============================================================
+# Single-source auth guard for Streamlit (avoid duplicate keys)
+# - Render "Sign out" exactly once (sidebar by default)
+# - Provide lightweight session-based login (dev)
+# - Ready for plugging real auth (e.g., Supabase) in check_login()
+# ============================================================
+
 from __future__ import annotations
-import re
+import os
 import streamlit as st
-from typing import Iterable, Set, Tuple, Optional
-from supabase_client import supabase_readonly, supabase_admin
+from typing import Optional, Tuple
 
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+# --- Session keys (centralized to avoid typos) ----------------
+K_USER_EMAIL = "user_email"
+K_USER_ROLE  = "user_role"
+K_AUTHED     = "is_authenticated"
 
-# ----------------------------
-# Internal: session helpers
-# ----------------------------
-def _attach_tokens_to_client():
-    toks = st.session_state.get("sb_tokens")
-    if toks:
-        try:
-            supabase_readonly().auth.set_session(
-                toks["access_token"], toks["refresh_token"]
-            )
-        except Exception:
-            pass
+# --- Roles ----------------------------------------------------
+ADMIN_ROLE = "admin"
+USER_ROLE  = "user"
 
-def _save_session(session):
-    if not session:
+
+# =============================================================
+# Internal helpers
+# =============================================================
+def _init_session():
+    """Initialize essential session keys."""
+    if K_AUTHED not in st.session_state:
+        st.session_state[K_AUTHED] = False
+    if K_USER_EMAIL not in st.session_state:
+        st.session_state[K_USER_EMAIL] = None
+    if K_USER_ROLE not in st.session_state:
+        st.session_state[K_USER_ROLE] = None
+
+
+def _set_user(email: str, role: str):
+    """Set current user into session."""
+    st.session_state[K_AUTHED] = True
+    st.session_state[K_USER_EMAIL] = email
+    st.session_state[K_USER_ROLE] = role
+
+
+def _clear_user(keep_keys: Tuple[str, ...] = ()):
+    """Clear almost all session state (keep some keys if needed)."""
+    keep = set(keep_keys)
+    for k in list(st.session_state.keys()):
+        if k in keep:
+            continue
+        del st.session_state[k]
+    # Re-init minimal keys
+    _init_session()
+
+
+# =============================================================
+# Public API
+# =============================================================
+def render_signout_once(location: str = "sidebar"):
+    """
+    Render Sign out button exactly once per rerun.
+    - location: "sidebar" or "main"
+    """
+    _init_session()
+
+    flag_key = f"_logout_rendered_{location}"
+    if st.session_state.get(flag_key):
         return
-    st.session_state["sb_tokens"] = {
-        "access_token": session.access_token,
-        "refresh_token": session.refresh_token,
-    }
-    st.session_state["session"] = session
+    st.session_state[flag_key] = True  # prevent duplicate rendering this run
 
-def _load_roles(user_id: str) -> Set[str]:
-    roles: Set[str] = set()
-    q = {"user_id": user_id}
-    try:
-        res = supabase_readonly().table("user_roles").select("role").match(q).execute()
-        roles = {r["role"] for r in res.data or []}
-    except Exception:
-        try:
-            res = supabase_admin().table("user_roles").select("role").match(q).execute()
-            roles = {r["role"] for r in res.data or []}
-        except Exception:
-            roles = set()
-    return roles
-
-# ----------------------------
-# Public UI
-# ----------------------------
-def _login_box(title: str = "Sign in") -> None:
-    st.subheader(title)
-    email = st.text_input("Email", placeholder="you@example.com", key="lg_email")
-    pwd   = st.text_input("Password", type="password", placeholder="• • • • • • • •", key="lg_pwd")
-    if st.button("Sign in", use_container_width=True, key="lg_submit"):
-        if not EMAIL_RE.match(email):
-            st.warning("กรุณากรอกเป็นอีเมล เช่น you@example.com")
-            st.stop()
-        try:
-            res = supabase_readonly().auth.sign_in_with_password(
-                {"email": email, "password": pwd}
-            )
-            _save_session(res.session)
-            st.session_state["roles"] = _load_roles(res.user.id)
-            st.success("Signed in")
+    area = st.sidebar if location == "sidebar" else st
+    with area:
+        # Unique key per location so it never collides with other places
+        if st.button("Sign out", use_container_width=True, key=f"btn_logout_{location}"):
+            # NOTE: Add your token revocation here if you use a real IdP.
+            _clear_user(keep_keys=())  # wipe everything for safety
+            st.success("Signed out")
             st.rerun()
-        except Exception as e:
-            st.error(f"Login failed: {e}")
 
-def logout():
-    try:
-        supabase_readonly().auth.sign_out()
-    except Exception:
-        pass
-    for k in ("sb_tokens", "session", "roles"):
-        st.session_state.pop(k, None)
-    st.success("Signed out")
-    st.rerun()
 
-def require_login(roles: Iterable[str] | None = None,
-                  title: str = "Sign in") -> Tuple[object, Set[str]]:
+def is_authenticated() -> bool:
+    _init_session()
+    return bool(st.session_state.get(K_AUTHED))
+
+
+def current_user() -> Tuple[Optional[str], Optional[str]]:
     """
-    เรียกบนสุดของทุกหน้า:
-      user, roles = require_login()            # ต้องล็อกอิน
-      user, roles = require_login({'admin'})   # ต้องเป็นแอดมิน
-    - แสดงฟอร์มล็อกอินใน main เท่านั้น
-    - Sidebar จะมีเฉพาะข้อมูลผู้ใช้ + Sign out หลังล็อกอินแล้ว
+    Returns (email, role)
     """
-    _attach_tokens_to_client()
+    _init_session()
+    return st.session_state.get(K_USER_EMAIL), st.session_state.get(K_USER_ROLE)
 
-    # 1) มี session แล้วหรือยัง
-    sess = st.session_state.get("session")
-    if not sess or not getattr(sess, "user", None):
-        try:
-            sess = supabase_readonly().auth.get_session()
-            if sess and sess.user:
-                _save_session(sess)
-        except Exception:
-            sess = None
 
-    # 2) ถ้ายังไม่ล็อกอิน → โชว์ฟอร์มที่ "main" เท่านั้น แล้ว stop
-    if not sess or not getattr(sess, "user", None):
-        _login_box(title)
-        st.stop()
+def require_login(required_role: Optional[str] = None, signout_location: str = "sidebar"):
+    """
+    Gatekeeper for every page.
+    - Call this ONCE at top-level (e.g., in streamlit_app.main()).
+    - It will show a minimal login (dev) if user not logged-in.
+    - If logged-in, it will render a single Sign out button (sidebar by default).
+    - required_role: None | "admin"
+    """
+    _init_session()
 
-    # 3) เติม roles ไว้ใน state (ครั้งแรก)
-    if "roles" not in st.session_state:
-        st.session_state["roles"] = _load_roles(sess.user.id)
-
-    have = set(st.session_state.get("roles", set()))
-    if roles:
-        need = set(roles)
-        if need.isdisjoint(have):
+    # 1) Check existing session first
+    if is_authenticated():
+        # Optional: enforce role
+        if required_role and st.session_state.get(K_USER_ROLE) != required_role:
             st.error("คุณไม่มีสิทธิ์เข้าถึงหน้านี้")
             st.stop()
 
-    # 4) Sidebar: แสดงข้อมูล (ไม่มีฟอร์มล็อกอิน)
-    with st.sidebar.expander("Account", expanded=False):
-        st.caption(f"Signed in as: **{sess.user.email}**")
-        st.caption(f"Roles: `{', '.join(have) or '-'}`")
-        if st.button("Sign out", use_container_width=True, key="btn_logout"):
-            logout()
+        # Render a single Sign out button (avoid duplicates)
+        render_signout_once(location=signout_location)
+        return
 
-    return sess.user, have
+    # 2) Not logged in yet -> show login UI (DEV MODE)
+    #    Replace this block with your real auth (Supabase, OAuth, etc.)
+    st.markdown("### Please sign in")
+    with st.form("dev_login_form", clear_on_submit=False):
+        email = st.text_input("Email", value=os.getenv("DEV_ADMIN_EMAIL", ""))
+        role  = st.selectbox("Role", [ADMIN_ROLE, USER_ROLE], index=0)
+        submitted = st.form_submit_button("Sign in")
+
+    if submitted:
+        # --- Real-world place to verify email/token against backend ---
+        # e.g., verify JWT from st.experimental_user, or Supabase auth user, etc.
+        allowed_admins = set(
+            (os.getenv("ALLOW_ADMIN_EMAILS", "")).replace(" ", "").split(",")
+        ) if os.getenv("ALLOW_ADMIN_EMAILS") else set()
+
+        if role == ADMIN_ROLE and allowed_admins and email not in allowed_admins:
+            st.error("อีเมลนี้ไม่ได้รับสิทธิ์ผู้ดูแลระบบ")
+            st.stop()
+
+        _set_user(email=email, role=role)
+        st.success(f"Welcome, {email}")
+        st.rerun()
+
+    # If we reach here, user has not logged in yet
+    st.stop()
+
+
+# =============================================================
+# Optional: convenience checks for pages
+# =============================================================
+def require_admin(signout_location: str = "sidebar"):
+    """Shortcut for admin-only pages."""
+    require_login(required_role=ADMIN_ROLE, signout_location=signout_location)
