@@ -19,7 +19,8 @@ from typing import List, Dict
 import streamlit as st
 from supabase import create_client, Client
 from postgrest.exceptions import APIError
-
+from auth_guard import require_login
+require_login()
 APP_VERSION = "v4.9.5"
 
 # ---------------- Page / Theme ----------------
