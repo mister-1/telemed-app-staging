@@ -1,3 +1,21 @@
+# streamlit_app.py
+import streamlit as st
+from auth_guard import require_login
+
+# บังคับให้ล็อกอิน (เพจหลัก)
+user, roles = require_login()
+
+st.title("Dashboard (staging)")
+st.write("Welcome,", user.email)
+
+# ตัวอย่างแยกตามสิทธิ
+if 'admin' in roles:
+    st.success("คุณเป็น admin: แสดงปุ่ม/ฟีเจอร์แก้ไขได้ที่นี่")
+else:
+    st.info("โหมด Viewer: เห็นข้อมูลได้ แต่ซ่อนปุ่มแก้ไข")
+
+
+
 import os, streamlit as st
 for k in ("SUPABASE_URL","SUPABASE_ANON_KEY","SUPABASE_SERVICE_ROLE_KEY","ENV"):
     if k in st.secrets and not os.getenv(k):
