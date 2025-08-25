@@ -1,5 +1,17 @@
 # streamlit_app.py
+
+import os
 import streamlit as st
+
+def get_env(name: str, default: str = "") -> str:
+    # ลองจาก st.secrets ก่อน ถ้าไม่มีค่อยไป os.getenv
+    try:
+        val = st.secrets[name]
+    except Exception:
+        val = os.getenv(name, default)
+    return val
+
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
