@@ -1,32 +1,5 @@
 # streamlit_app.py
 import streamlit as st
-from auth_guard import require_login
-
-# บังคับให้ล็อกอิน (เพจหลัก)
-user, roles = require_login()
-
-st.title("Dashboard (staging)")
-st.write("Welcome,", user.email)
-
-# ตัวอย่างแยกตามสิทธิ
-if 'admin' in roles:
-    st.success("คุณเป็น admin: แสดงปุ่ม/ฟีเจอร์แก้ไขได้ที่นี่")
-else:
-    st.info("โหมด Viewer: เห็นข้อมูลได้ แต่ซ่อนปุ่มแก้ไข")
-
-
-
-import os, streamlit as st
-for k in ("SUPABASE_URL","SUPABASE_ANON_KEY","SUPABASE_SERVICE_ROLE_KEY","ENV"):
-    if k in st.secrets and not os.getenv(k):
-        os.environ[k] = str(st.secrets[k])
-
-# DashBoard Telemedicine — v4.9.5 (Full, Admin CRUD fix)
-# - Fix: เพิ่ม Transaction รายวัน บันทึก/อัปเดตได้จริง (เช็คซ้ำ hospital_id+date)
-# - Fix: เพิ่มผู้ดูแล (admin) ได้จริง + แสดง error ชัดเจน
-# - Keep: Daily trend spline + labels, KPI equal height, Sidebar download, Dark mode, Master data, Reports
-
-import os, uuid, json, bcrypt, requests, random, io
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -34,12 +7,27 @@ import plotly.io as pio
 from PIL import Image, ImageDraw, ImageFont
 from datetime import date, datetime, timedelta
 from typing import List, Dict
-import streamlit as st
 from supabase import create_client, Client
 from postgrest.exceptions import APIError
-from auth_guard import require_login
-require_login()
+from auth_guard import require_login, current_user
+
 APP_VERSION = "v4.9.5"
+
+# ---------------- Page / Theme ----------------
+st.set_page_config(page_title="DashBoard Telemedicine", page_icon="📊", layout="wide")
+
+# ---------------- Login & Welcome (single source) ----------------
+require_login()
+user_email, role = current_user()
+
+st.title("Dashboard (staging)")
+st.write("Welcome,", user_email or "-")
+if role == "admin":
+    st.success("คุณเป็น admin: แสดงปุ่ม/ฟีเจอร์แก้ไขได้ที่นี่")
+else:
+    st.info("โหมด Viewer: เห็นข้อมูลได้ แต่ซ่อนปุ่มแก้ไข")
+
+
 
 # ---------------- Page / Theme ----------------
 st.set_page_config(page_title="DashBoard Telemedicine", page_icon="📊", layout="wide")
