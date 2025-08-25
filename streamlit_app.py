@@ -1,7 +1,10 @@
 # streamlit_app.py
 
 import os
+import io
 import streamlit as st
+import bcrypt
+import uuid
 
 def get_env(name: str, default: str = "") -> str:
     # ลองจาก st.secrets ก่อน ถ้าไม่มีค่อยไป os.getenv
@@ -41,8 +44,6 @@ else:
 
 
 
-# ---------------- Page / Theme ----------------
-st.set_page_config(page_title="DashBoard Telemedicine", page_icon="📊", layout="wide")
 
 PALETTE_PASTEL = ["#A7C7E7","#F8C8DC","#B6E2D3","#FDE2B3","#EAD7F7","#CDE5F0",
                   "#FFD6E8","#C8E6C9","#FFF3B0","#D7E3FC","#F2D7EE","#B8F1ED"]
@@ -339,26 +340,18 @@ def apply_ui_patches():
     </script>
     """, height=0)
 
-# ---------------- Auth ----------------
-if 'auth' not in st.session_state: st.session_state['auth']={'ok':False,'user':None,'role':'viewer'}
+# ---------------- Auth (single-source via auth_guard) ----------------
+# Legacy sidebar login removed. We only display current auth status.
+from auth_guard import current_user as _current_user_view
+
 with st.sidebar:
     st.markdown('## 🔐 Admin')
-    if not st.session_state.auth['ok']:
-        with st.form('login'):
-            u = st.text_input('Username'); p = st.text_input('Password', type='password')
-            rows = load_df('admins')
-            if st.form_submit_button('Login'):
-                row = rows[rows['username']==u] if 'username' in rows.columns else pd.DataFrame()
-                if not row.empty and (p and bcrypt.checkpw(p.encode(), row.iloc[0]['password_hash'].encode())):
-                    role = row.iloc[0]['role'] if 'role' in row.columns and pd.notna(row.iloc[0]['role']) else 'admin'
-                    st.session_state.auth={'ok':True,'user':u,'role':role}; rerun()
-                else:
-                    st.error('ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง')
+    _email, _role = _current_user_view()
+    st.caption(_email or "-")
+    if _role == "admin":
+        st.success("Admin mode")
     else:
-        st.write(f"✅ {st.session_state.auth['user']} · role: **{st.session_state.auth['role']}**")
-        if st.button('Logout'): st.session_state.auth={'ok':False,'user':None,'role':'viewer'}; rerun()
-
-# ---------------- Router ----------------
+        st.info("Viewer mode")# ---------------- Router ----------------
 page = st.query_params.get('page','dashboard')
 with st.sidebar:
     choices = ['dashboard','admin']
@@ -810,15 +803,18 @@ def render_dashboard():
 # ====================== ADMIN ======================
 def render_admin():
     apply_ui_patches()
-    if not st.session_state.auth['ok']:
-        st.warning('กรุณาเข้าสู่ระบบทาง Sidebar ก่อน'); return
+    from auth_guard import current_user as _cu_admin
+    _email_admin, _role_admin = _cu_admin()
+    if _role_admin != 'admin':
+        st.error('ต้องเป็นผู้ดูแลระบบ')
+        return
 
     st.markdown("# DashBoard Telemedicine")
     st.markdown("## 🛠️ หน้าการจัดการ (Admin)")
     tabs = st.tabs(['จัดการโรงพยาบาล','จัดการ Transaction','ข้อมูลหลัก','จัดการผู้ดูแล','รายงาน','ตั้งค่า & ข้อมูลตัวอย่าง'])
 
-    role = st.session_state.auth.get('role','admin')
-    can_edit = role in ('admin','editor')
+    role = _role_admin
+    can_edit = (role in ('admin','editor'))
 
     # ---- Hospitals ----
     with tabs[0]:
