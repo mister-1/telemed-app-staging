@@ -1,22 +1,24 @@
 import os, traceback, streamlit as st
 from pathlib import Path
 
-# 1) โหลด secrets → ENV + ทำ alias ให้รองรับทั้งสองชื่อ
+# --- Failsafe: แอปนี้ต้องเป็น staging เท่านั้น ---
+ENV = (os.getenv("ENV") or st.secrets.get("ENV") or "").lower()
+if ENV != "staging":
+    st.error("This instance must run with ENV=staging. Aborting.")
+    st.stop()
+
+# โหลด secrets → ENV + alias ชื่อคีย์
 for k in ("SUPABASE_URL","SUPABASE_ANON_KEY","SUPABASE_SERVICE_KEY","SUPABASE_SERVICE_ROLE_KEY","ENV"):
     v = st.secrets.get(k)
-    if v and not os.getenv(k):
-        os.environ[k] = str(v)
+    if v and not os.getenv(k): os.environ[k] = str(v)
 if os.getenv("SUPABASE_SERVICE_ROLE_KEY") and not os.getenv("SUPABASE_SERVICE_KEY"):
     os.environ["SUPABASE_SERVICE_KEY"] = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 if os.getenv("SUPABASE_SERVICE_KEY") and not os.getenv("SUPABASE_SERVICE_ROLE_KEY"):
     os.environ["SUPABASE_SERVICE_ROLE_KEY"] = os.environ["SUPABASE_SERVICE_KEY"]
 
-# 2) รันไฟล์ streamlit_app.py แบบสคริปต์หลักทุกครั้ง (เหมือน `streamlit run streamlit_app.py`)
+# รัน streamlit_app.py แบบสคริปต์หลัก (รองรับสคริปต์คลาสสิก)
 try:
-    script_path = Path(__file__).with_name("streamlit_app.py")
-    code = script_path.read_text(encoding="utf-8")
-    globals_dict = {"__name__": "__main__"}
-    exec(compile(code, str(script_path.name), "exec"), globals_dict)
+    code = Path(__file__).with_name("streamlit_app.py").read_text(encoding="utf-8")
+    exec(compile(code, "streamlit_app.py", "exec"), {"__name__": "__main__"})
 except Exception as e:
-    st.error("⚠️ เกิดข้อผิดพลาดระหว่างรัน streamlit_app.py (ดูรายละเอียดด้านล่าง)")
-    st.code("".join(traceback.format_exception(type(e), e, e.__traceback__)))
+    st.error("⚠️ Error while running streamlit_app.py"); st.code("".join(traceback.format_exception(type(e), e, e.__traceback__)))
