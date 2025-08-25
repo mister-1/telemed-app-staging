@@ -1,31 +1,33 @@
 # auth_guard.py
 # ============================================================
-# Single-source auth guard for Streamlit (avoid duplicate keys)
-# - Render "Sign out" exactly once (sidebar by default)
-# - Provide lightweight session-based login (dev)
-# - Ready for plugging real auth (e.g., Supabase) in check_login()
+# Streamlit auth guard (single-source login + single signout button)
+# - ใช้ session เก็บสถานะผู้ใช้
+# - ปุ่ม Sign out เรนเดอร์ครั้งเดียวต่อรอบรัน (กัน key ซ้ำ)
+# - รองรับ DEV login form ในตัว (ปรับต่อกับ IdP จริงภายหลังได้)
+# - ใช้ร่วมกับ streamlit_app.py ที่เรียก:
+#     require_login(); user_email, role = current_user()
 # ============================================================
 
 from __future__ import annotations
+
 import os
-import streamlit as st
 from typing import Optional, Tuple
 
-# --- Session keys (centralized to avoid typos) ----------------
+import streamlit as st
+
+# ---------------- Session keys ----------------
+K_AUTHED = "is_authenticated"
 K_USER_EMAIL = "user_email"
-K_USER_ROLE  = "user_role"
-K_AUTHED     = "is_authenticated"
+K_USER_ROLE = "user_role"
 
-# --- Roles ----------------------------------------------------
+# ---------------- Roles ----------------
 ADMIN_ROLE = "admin"
-USER_ROLE  = "user"
+USER_ROLE = "user"
 
 
-# =============================================================
-# Internal helpers
-# =============================================================
-def _init_session():
-    """Initialize essential session keys."""
+# ---------------- Utilities ----------------
+def _init_session() -> None:
+    """Ensure required session keys exist."""
     if K_AUTHED not in st.session_state:
         st.session_state[K_AUTHED] = False
     if K_USER_EMAIL not in st.session_state:
@@ -34,28 +36,46 @@ def _init_session():
         st.session_state[K_USER_ROLE] = None
 
 
-def _set_user(email: str, role: str):
+def _set_user(email: str, role: str) -> None:
     """Set current user into session."""
+    _init_session()
     st.session_state[K_AUTHED] = True
     st.session_state[K_USER_EMAIL] = email
     st.session_state[K_USER_ROLE] = role
 
 
-def _clear_user(keep_keys: Tuple[str, ...] = ()):
-    """Clear almost all session state (keep some keys if needed)."""
+def _clear_user(keep_keys: Tuple[str, ...] = ()) -> None:
+    """Clear session state except some keep keys."""
     keep = set(keep_keys)
     for k in list(st.session_state.keys()):
         if k in keep:
             continue
         del st.session_state[k]
-    # Re-init minimal keys
     _init_session()
 
 
-# =============================================================
-# Public API
-# =============================================================
-def render_signout_once(location: str = "sidebar"):
+def _get_allowed_admins() -> set[str]:
+    """
+    List allowed admin emails from secrets/env.
+    - ALLOW_ADMIN_EMAILS: comma-separated emails
+    - If not set -> no restriction (DEV mode)
+    """
+    allow_raw = None
+    try:
+        allow_raw = st.secrets.get("ALLOW_ADMIN_EMAILS", None)
+    except Exception:
+        pass
+    if allow_raw is None:
+        allow_raw = os.getenv("ALLOW_ADMIN_EMAILS")
+
+    if not allow_raw:
+        return set()
+
+    return {e.strip() for e in str(allow_raw).split(",") if e.strip()}
+
+
+# ---------------- Public API ----------------
+def render_signout_once(location: str = "sidebar") -> None:
     """
     Render Sign out button exactly once per rerun.
     - location: "sidebar" or "main"
@@ -65,14 +85,14 @@ def render_signout_once(location: str = "sidebar"):
     flag_key = f"_logout_rendered_{location}"
     if st.session_state.get(flag_key):
         return
-    st.session_state[flag_key] = True  # prevent duplicate rendering this run
+    st.session_state[flag_key] = True
 
     area = st.sidebar if location == "sidebar" else st
     with area:
-        # Unique key per location so it never collides with other places
-        if st.button("Sign out", use_container_width=True, key=f"btn_logout_{location}"):
-            # NOTE: Add your token revocation here if you use a real IdP.
-            _clear_user(keep_keys=())  # wipe everything for safety
+        # ใช้ key เฉพาะที่ผูกกับ location เพื่อกันชนซ้ำ
+        if st.button("Sign out", key=f"btn_logout_{location}", use_container_width=True):
+            # TODO: ถ้ามี token/JWT ให้ revoke ที่นี่
+            _clear_user()
             st.success("Signed out")
             st.rerun()
 
@@ -90,42 +110,28 @@ def current_user() -> Tuple[Optional[str], Optional[str]]:
     return st.session_state.get(K_USER_EMAIL), st.session_state.get(K_USER_ROLE)
 
 
-def require_login(required_role: Optional[str] = None, signout_location: str = "sidebar"):
+def _dev_login_ui() -> None:
     """
-    Gatekeeper for every page.
-    - Call this ONCE at top-level (e.g., in streamlit_app.main()).
-    - It will show a minimal login (dev) if user not logged-in.
-    - If logged-in, it will render a single Sign out button (sidebar by default).
-    - required_role: None | "admin"
+    Minimal DEV login form. Replace with real auth (Supabase/OAuth) เมื่อพร้อม.
+    - เคารพ ALLOW_ADMIN_EMAILS ถ้ากำหนด
+    - DEV_ADMIN_EMAIL ช่วยเติมค่าเริ่มต้นในช่อง Email
     """
-    _init_session()
-
-    # 1) Check existing session first
-    if is_authenticated():
-        # Optional: enforce role
-        if required_role and st.session_state.get(K_USER_ROLE) != required_role:
-            st.error("คุณไม่มีสิทธิ์เข้าถึงหน้านี้")
-            st.stop()
-
-        # Render a single Sign out button (avoid duplicates)
-        render_signout_once(location=signout_location)
-        return
-
-    # 2) Not logged in yet -> show login UI (DEV MODE)
-    #    Replace this block with your real auth (Supabase, OAuth, etc.)
     st.markdown("### Please sign in")
+    default_email = None
+    try:
+        default_email = st.secrets.get("DEV_ADMIN_EMAIL", None)
+    except Exception:
+        pass
+    if default_email is None:
+        default_email = os.getenv("DEV_ADMIN_EMAIL", "")
+
     with st.form("dev_login_form", clear_on_submit=False):
-        email = st.text_input("Email", value=os.getenv("DEV_ADMIN_EMAIL", ""))
-        role  = st.selectbox("Role", [ADMIN_ROLE, USER_ROLE], index=0)
+        email = st.text_input("Email", value=default_email)
+        role = st.selectbox("Role", [ADMIN_ROLE, USER_ROLE], index=0)
         submitted = st.form_submit_button("Sign in")
 
     if submitted:
-        # --- Real-world place to verify email/token against backend ---
-        # e.g., verify JWT from st.experimental_user, or Supabase auth user, etc.
-        allowed_admins = set(
-            (os.getenv("ALLOW_ADMIN_EMAILS", "")).replace(" ", "").split(",")
-        ) if os.getenv("ALLOW_ADMIN_EMAILS") else set()
-
+        allowed_admins = _get_allowed_admins()
         if role == ADMIN_ROLE and allowed_admins and email not in allowed_admins:
             st.error("อีเมลนี้ไม่ได้รับสิทธิ์ผู้ดูแลระบบ")
             st.stop()
@@ -134,13 +140,33 @@ def require_login(required_role: Optional[str] = None, signout_location: str = "
         st.success(f"Welcome, {email}")
         st.rerun()
 
-    # If we reach here, user has not logged in yet
+    # ยังไม่ล็อกอิน -> หยุดการเรนเดอร์ส่วนที่เหลือ
     st.stop()
 
 
-# =============================================================
-# Optional: convenience checks for pages
-# =============================================================
-def require_admin(signout_location: str = "sidebar"):
-    """Shortcut for admin-only pages."""
+def require_login(required_role: Optional[str] = None, signout_location: str = "sidebar") -> None:
+    """
+    Gatekeeper สำหรับทุกหน้า
+    - เรียกครั้งเดียวที่ต้นหน้า (เช่นใน main())
+    - ถ้ายังไม่ล็อกอิน จะโชว์ DEV login form
+    - ถ้าล็อกอินแล้ว จะเรนเดอร์ปุ่ม Sign out 'ครั้งเดียว' ตามตำแหน่งที่กำหนด
+    - required_role: None หรือ "admin"
+    """
+    _init_session()
+
+    if not is_authenticated():
+        _dev_login_ui()  # จะ st.stop() ภายในถ้ายังไม่สัมฤทธิ์ผล
+
+    # ผ่านแล้ว: ตรวจสิทธิ์เพิ่มเติมถ้ากำหนด
+    role = st.session_state.get(K_USER_ROLE)
+    if required_role and role != required_role:
+        st.error("คุณไม่มีสิทธิ์เข้าถึงหน้านี้")
+        st.stop()
+
+    # แสดงปุ่ม Sign out เพียงที่เดียว
+    render_signout_once(location=signout_location)
+
+
+def require_admin(signout_location: str = "sidebar") -> None:
+    """Shortcut สำหรับหน้า admin เท่านั้น"""
     require_login(required_role=ADMIN_ROLE, signout_location=signout_location)
